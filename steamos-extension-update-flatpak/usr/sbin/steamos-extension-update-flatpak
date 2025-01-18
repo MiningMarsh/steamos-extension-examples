@@ -2,5 +2,10 @@
 
 /usr/bin/flatpak remote-add --system --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 /usr/bin/flatpak repair --system
+
+until nm-online -qx; do
+	sleep 15
+done
+
 /usr/bin/flatpak update --system -y --noninteractive
 /usr/bin/flatpak uninstall --system --delete-data --unused -y --noninteractive

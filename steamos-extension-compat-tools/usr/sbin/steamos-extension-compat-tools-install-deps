@@ -4,6 +4,8 @@ until nm-online -qx; do
 	sleep 15
 done
 
+/usr/bin/flatpak remote-add --system --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
 flatpak install \
 	--system -y --noninteractive \
 	io.github.dosbox-staging \
