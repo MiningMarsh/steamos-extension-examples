@@ -3,7 +3,7 @@
 . /usr/lib/steamos-extension-performance-tuning.zsh
 
 amdgpupm high &
-cpugov performance &
+cpupm false &
 devicepm on &
 pciepm performance &
 scsipm max_performance &

@@ -152,9 +152,11 @@ vm.watermark_scale_factor=333
 EOF
 
 # Kernel parameter tweaks.
-# # If we dont set the hugepage policy here, they are unlikely to be used by
-# the time we enable it.
-if [[ -e /efi/EFI/steamos/grub.cfg ]]; then
+#
+# Deliberately not adapted for HoloISO - something in here is causing reboots
+# to fail. disable-mitigations works, however.
+# FIXME: Add HoloISO support.
+if [[ -e /boot/efi/EFI/steamos/grub.cfg ]]; then
 	for setting in \
 		drm_kms_helper.poll=0 \
 		gbpages \
@@ -178,10 +180,12 @@ if [[ -e /efi/EFI/steamos/grub.cfg ]]; then
 		virtio_blk.poll_queues=16 \
 		virtio_blk.queue_depth=2048
 	do
-		if ! grep -q $setting /efi/EFI/steamos/grub.cfg; then
-			sed -i -E 's@^(\s)*steamenv_boot(.*)$@\1steamenv_boot\2 '"$setting"'@g' /efi/EFI/steamos/grub.cfg
-			touch /tmp/.kernel-cmdline-modified
+		if grep -q $setting /boot/efi/EFI/steamos/grub.cfg; then
+			continue
 		fi
+
+		sed -i -E 's@^(\s*)steamenv_boot(.*)$@\1steamenv_boot\2 '$setting'@g' /boot/efi/EFI/steamos/grub.cfg
+		touch /tmp/.kernel-cmdline-modified
 	done
 fi
 

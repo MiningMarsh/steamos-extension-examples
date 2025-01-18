@@ -3,7 +3,7 @@
 . /usr/lib/steamos-extension-performance-tuning.zsh
 
 amdgpupm auto &
-cpugov schedutil &
+cpupm true &
 devicepm auto &
 pciepm powersupersave &
 scsipm med_power_with_dipm &

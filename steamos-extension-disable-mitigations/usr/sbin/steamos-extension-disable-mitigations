@@ -1,10 +1,25 @@
 #!/usr/bin/env zsh
 
-if ! [[ -e /efi/EFI/steamos/grub.cfg ]]; then
+local starter=steamenv_boot
+local cfg=/boot/efi/EFI/steamos/grub.cfg
+local remount=false
+
+# HoloISO
+if [[ -f /boot/grub/grub.cfg ]]; then
+	starter=linux
+	cfg=/boot/grub/grub.cfg
+	remount=true
+fi
+
+if [[ ! -e $cfg ]] || grep -q mitigations=off $cfg; then
 	exit
 fi
 
-if ! grep -q mitigations=off /efi/EFI/steamos/grub.cfg; then
-	sed -i -E 's@^(\s)*steamenv_boot(.*)$@\1steamenv_boot\2 mitigations=off@g' /efi/EFI/steamos/grub.cfg
-	touch /tmp/.kernel-cmdline-modified
+# HoloISO keeps boot on the readonly partition.
+if $remount && [[ ! -f /tmp/.kernel-cmdline-readonly-disabled ]]; then
+	steamos-readonly disable
+	touch /tmp/.kernel-cmdline-readonly-disabled
 fi
+
+sed -i -E 's@^(\s*)'$starter'(.*)$@\1'$starter'\2 mitigations=off@g' $cfg
+touch /tmp/.kernel-cmdline-modified

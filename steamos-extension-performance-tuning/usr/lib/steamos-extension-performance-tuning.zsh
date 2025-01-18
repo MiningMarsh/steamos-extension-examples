@@ -29,6 +29,7 @@ function ioscheduler {
 }
 
 function on_ac {
+	[[ ! -e /sys/class/power_supply/ACAD/online ]] || \
 	[[ 1 == $(cat /sys/class/power_supply/ACAD/online) ]]
 }
 
@@ -86,8 +87,26 @@ function hddpm {
 	smartctl -s apm,$4 $1
 }
 
-function cpugov {
-	cpupower frequency-set -g $1 > /dev/null 2>&1
+function cpupm {
+	if \
+		[[ -e /sys/devices/system/cpu/cpufreq/policy0/scaling_driver ]] &&
+		[[ intel_pstate == $(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_driver) ]]
+	then
+		for policy in /sys/devices/system/cpu/cpufreq/policy*(N); do
+			echo powersave | tee $policy/scaling_governor > /dev/null 2>&1
+			if $1; then
+				echo balance_performance
+			else
+				echo performance
+			fi | tee $policy/energy_performance_preference > /dev/null 2>&1
+		done
+	else
+		if $1; then
+			cpupower frequency-set -g performance > /dev/null 2>&1
+		else
+			cpupower frequency-set -g schedutil > /dev/null 2>&1
+		fi
+	fi
 }
 
 function nvmepm {
