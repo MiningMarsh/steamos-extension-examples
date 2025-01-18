@@ -1,0 +1,15 @@
+[Unit]
+Description=Disable Processor Mitigations
+Requires=systemd-sysext.service
+DefaultDependencies=false
+Requires=systemd-sysext.service tmp.mount
+After=systemd-sysext.service tmp.mount
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/steamos-extension-disable-mitigations
+RemainAfterExit=true
+
+[Install]
+WantedBy=sysinit.target

@@ -1,0 +1,1 @@
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="nvme[0-9]n[0-9]|nvme[0-9][0-9]n[0-9]|nvme[0-9]n[0-9][0-9]|nvme[0-9][0-9]n[0-9][0-9]", RUN+="/usr/sbin/steamos-extension-performance-tuning-dispatch nvme %k"

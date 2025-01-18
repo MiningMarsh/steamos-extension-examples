@@ -1,0 +1,64 @@
+#!/usr/bin/env zsh
+set -e
+
+if ! nm-online -x -q; then
+    echo Network manager reports no internet connection.
+    exit 1
+fi
+
+install_dir="$HOME/.steam/root/compatibilitytools.d"
+
+function generate_vdf {
+cat <<EOF
+"compatibilitytools"
+{
+  "compat_tools"
+  {
+    "$1"
+    {
+      "install_path" "."
+      "display_name" "$2"
+      "from_oslist"  "windows"
+      "to_oslist"    "linux"
+    }
+  }
+}
+EOF
+}
+
+mkdir -p ~/.cache/steamos-extension-compat-tools
+cd ~/.cache/steamos-extension-compat-tools
+
+if [[ ! -d roberta ]]; then
+	git clone 'https://github.com/dreamer/roberta.git'
+fi
+cd roberta
+git pull -a
+version="$(git describe --tags --dirty --always)"
+
+mkdir -p $install_dir
+cd $install_dir
+if [[ -f roberta/version ]] && [[ "$(cat roberta/version)" == "$version" ]]; then
+	exit 0
+fi
+
+mkdir -p ~/.config
+cat > ~/.config/roberta.conf << EOF
+[confgen]
+force = true
+[scummvm]
+fullscreenmode = screen 0
+cmd = /usr/bin/steamos-extension-compat-tools-flatpak run --filesystem=%install\\_dir% org.scummvm.ScummVM
+EOF
+
+rm -rf roberta
+mkdir -p roberta
+
+echo "# pylint: disable=missing-docstring" > roberta/version.py
+echo "VERSION = '$version'" >> roberta/version.py
+
+for file in run-vm fakescripteval.py log.py settings.py toolbox.py tweaks.py xdg.py xlib.py toolmanifest.vdf; do
+	cp ~/.cache/steamos-extension-compat-tools/roberta/$file roberta/$file
+done
+generate_vdf roberta "ScummVM" > roberta/compatibilitytool.vdf
+echo "$version" > roberta/version

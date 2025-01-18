@@ -1,0 +1,84 @@
+#!/usr/bin/env zsh
+
+function units {
+	systemctl list-unit-files $@ --full --all --plain --no-legend 2>/dev/null \
+	| awk '{print $1}' \
+	| grep -E '^steamos-extension-[a-z0-9A-Z-]+[.][a-z]+$' \
+	| grep -vE '^steamos-extension-loader(-installer)?[.]service$'
+}
+
+function sysext-loaded {
+	mount \
+	| grep -E '^sysext on /usr' \
+	| grep -oE '/steamos-extension-[^/]+/' \
+	| cut -f2 -d/ \
+	| sort | uniq
+}
+
+function sysext-list {
+	find /var/lib/extensions \
+		-mindepth 1 -maxdepth 1 \
+		-type f \
+	| rev | cut -f2- -d. | cut -f1 -d/ | rev \
+	| sort | uniq
+}
+
+until cmp =(sysext-list) =(sysext-loaded); do
+	sleep 0.05
+done
+
+systemctl daemon-reload > /dev/null 2>&1
+
+for d in /etc/systemd/{system,user}; do
+	mkdir -p $d
+	find $d -xtype l -delete
+	find $d -mindepth 1 -type d -empty -delete
+done
+
+for unit in \
+	steamos-extension-loader-installer.service \
+	steamos-extension-loader.service \
+	systemd-sysext.service
+do
+	systemctl enable --now --no-block $unit > /dev/null 2>&1
+done
+
+units --global \
+	| tr '\n' '\0' \
+	| xargs -0rn1 -P$(nproc --all) systemctl --global enable \
+	> /dev/null 2>&1
+
+units \
+	| tr '\n' '\0' \
+       	| xargs -0r systemctl preset --preset-mode=full \
+	> /dev/null 2>&1
+
+units | while read -r unit; do
+	if [[ enabled == "$(systemctl is-enabled $unit 2>&1)" ]]; then
+		systemctl start --no-block $unit > /dev/null 2>&1
+	fi
+done
+
+systemctl start --no-block systemd-portabled.service > /dev/null 2>&1
+
+for unit in \
+	podman-auto-update.timer \
+	podman-clean-transient.service \
+	podman-restart.service \
+	podman.service \
+	podman.socket
+do
+	systemctl enable --now --no-block $unit > /dev/null 2>&1
+done
+
+for unit in \
+	podman-auto-update.timer \
+	podman-restart.service \
+	podman.socket
+do
+	systemctl enable --global $unit > /dev/null 2>&1
+done
+
+# Needed in case any extensions decide to add udev rules.
+udevadm control --reload-rules
+udevadm trigger

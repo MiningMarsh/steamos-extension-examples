@@ -1,0 +1,7 @@
+[Unit]
+Description=Update Flatpak Applications
+Requires=network.target network-online.target systemd-sysext.service
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/steamos-extension-update-flatpak

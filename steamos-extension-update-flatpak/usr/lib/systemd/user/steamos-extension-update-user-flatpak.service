@@ -1,0 +1,6 @@
+[Unit]
+Description=Update User Flatpak Packages
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/steamos-extension-update-user-flatpak

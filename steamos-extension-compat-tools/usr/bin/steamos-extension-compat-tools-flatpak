@@ -1,0 +1,3 @@
+#!/usr/bin/env zsh
+
+LD_PRELOAD=/usr/lib/libcurl.so /usr/bin/flatpak $@

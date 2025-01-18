@@ -1,0 +1,1 @@
+ACTION=="add|change", SUBSYSTEM=="net", KERNEL=="wlp*|wlan*", RUN+="/usr/sbin/steamos-extension-performance-tuning-dispatch wifi %k"

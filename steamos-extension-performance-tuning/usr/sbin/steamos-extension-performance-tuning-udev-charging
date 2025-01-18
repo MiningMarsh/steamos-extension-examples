@@ -1,0 +1,16 @@
+#!/usr/bin/env zsh
+
+. /usr/lib/steamos-extension-performance-tuning.zsh
+
+amdgpupm high &
+cpugov performance &
+devicepm on &
+pciepm performance &
+scsipm max_performance &
+sndpm false &
+wifipm off &
+
+update-btrfs &
+update-devices nvme sd &
+
+wait

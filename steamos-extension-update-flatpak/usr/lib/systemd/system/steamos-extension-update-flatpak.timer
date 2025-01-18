@@ -1,0 +1,10 @@
+[Unit]
+Description=Update System Flatpak Installation
+Requires=network.target network-online.target systemd-sysext.service
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

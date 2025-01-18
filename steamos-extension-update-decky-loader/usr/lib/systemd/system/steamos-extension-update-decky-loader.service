@@ -1,0 +1,7 @@
+[Unit]
+Description=Update Plugin Loader
+Requires=network.target network-online.target systemd-sysext.service
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/steamos-extension-update-decky-loader

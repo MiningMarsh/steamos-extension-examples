@@ -1,0 +1,13 @@
+[Unit]
+Description=Preload files likely to be loaded
+DefaultDependencies=false
+Requires=systemd-sysext.service
+After=systemd-sysext.service
+Before=sysinit.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/steamos-extension-preload-wrapper
+
+[Install]
+WantedBy=sysinit.target

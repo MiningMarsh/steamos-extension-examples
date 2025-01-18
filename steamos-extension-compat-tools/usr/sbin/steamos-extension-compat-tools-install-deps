@@ -1,0 +1,10 @@
+#!/usr/bin/env zsh
+
+until nm-online -qx; do
+	sleep 15
+done
+
+flatpak install \
+	--system -y --noninteractive \
+	io.github.dosbox-staging \
+	org.scummvm.ScummVM

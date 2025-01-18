@@ -1,0 +1,15 @@
+[Unit]
+Description=Retain Boot Order
+Requires=systemd-sysext.service
+DefaultDependencies=false
+Requires=systemd-sysext.service
+After=systemd-sysext.service
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/steamos-extension-retain-boot
+RemainAfterExit=true
+
+[Install]
+WantedBy=sysinit.target

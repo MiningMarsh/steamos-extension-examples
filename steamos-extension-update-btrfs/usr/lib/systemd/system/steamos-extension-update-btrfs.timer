@@ -1,0 +1,10 @@
+[Unit]
+Description=Update steamos-btrfs
+Requires=network.target network-online.target systemd-sysext.service
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target

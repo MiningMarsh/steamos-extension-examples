@@ -1,0 +1,227 @@
+#!/usr/bin/env zsh
+
+. /usr/lib/steamos-extension-performance-tuning.zsh
+
+< /proc/swaps while read -r device devtype devsize devuse devprio; do
+	if grep -q swapfile <<< $device && [[ $devtype == file ]]; then
+		swapoff $device && swapon --discard -p $devprio $device
+	fi
+done
+
+# baloo is KDE's file indexer. It can be a performance hog sometimes.
+for unit in \
+	gssuserproxy.socket \
+	kde-baloo.service \
+	ssh-agent.service
+do
+	systemctl disable --global $unit
+done
+
+# obex is bluetooth file transfer.
+for unit in \
+	drkonqi-coredump-cleanup.timer \
+	obex.service \
+	systemd-tmpfiles-clean.timer
+do
+	systemctl enable --global $unit
+done
+
+# Enable multi-gen LRU
+systune /sys/kernel/mm/lru_gen \
+	enabled 7 \
+	min_ttl_ms 0
+
+# Raise file limits. This should oxcur early enough in the boot to apply
+# to everything. We dont bother enforcing persistence here as the extension
+# can just reinstall the file on next boot after an update.
+upsert /etc/security/limits.d/00-steamos-extension-performance-tuning.conf << EOF
+* hard memlock 2147484
+* soft memlock 2147484
+EOF
+
+# Disable kernel samepage mapping, it kills idle efficiency.
+systune /sys/kernel/mm/ksm \
+	run 0
+
+# Configure kernel hugepage parameters.
+# Disable the defragger to reduce background operations.
+systune /sys/kernel/mm/transparent_hugepage \
+	enabled always \
+	defrag madvise \
+	shmem_enabled always \
+	khugepaged/defrag 0
+
+# Turn on transparent hugepages for shared menory.
+mount -o remount,huge=advise /tmp
+mount -o remount,huge=advise /dev/shm
+
+# Enable TEO cpuidle governor.
+systune /sys/devices/system/cpu/cpuidle \
+	current_governor teo
+
+sysctl -p- > /dev/null << EOF
+# Disable memory compaction to reduce background activity.
+vm.compaction_proactiveness=0
+
+# Disable core dumps.
+kernel.core_pattern=|/bin/false
+
+# Disables the hung task scanner to reduce background activity
+kernel.hung_task_timeout_secs=0
+kernel.hung_task_check_interval_secs=5
+
+# Effectively disable the kernel logger.
+kernel.printk=0 0 0 0
+
+# Minimize page lock unfairness without disabling it.
+vm.page_lock_unfairness=1
+
+# Enable task auto-grouping; this should make latency of tooling like the
+# UI overlay better under hogh load games.
+kernel.sched_autogroup_enabled=0
+
+# Double the CFS transfer timeslice to reduce transfer overhead.
+kernel.sched_cfs_bandwidth_slice_us=10000
+
+# Parent-runs-first is more cache-friendly, but the child process is usually
+# the hotter code.
+# https://yarchive.net/comp/linux/child-runs-first.html
+kernel.sched_child_runs_first=1
+
+# Disable the energy aware scheduler, the steam deck is heterogeneous.
+# See: https://docs.kernel.org/scheduler/sched-energy.html
+#   ! EAS does not support platforms with symmetric CPU topologies !
+kernel.sched_energy_aware=1
+
+# Set minimal round-robin timeslice. Less efficient, more responsive.
+kernel.sched_rr_timeslice_ms=1
+
+# See: https://docs.kernel.org/6.7/scheduler/sched-util-clamp.html
+#
+# On the other hand, a busy task for instance that requires to run at maximum 
+# performance point will suffer a delay of ~200ms (PELT HALFIFE = 32ms) for the
+# scheduler to realize that. This is known to affect workloads like gaming on 
+# mobile devices where frames will drop due to slow response time to select the
+# higher frequency required for the tasks to finish their work in time. Setting
+# UCLAMP_MIN=1024 will ensure such tasks will always see the highest performance level when they start running.
+kernel.sched_util_clamp_min=1024
+kernel.sched_util_clamp_min_rt_default=1024
+
+# Disable task delay accounting to reduce overhead.
+kernel.task_delayacct=0
+
+# Enable timer migration to non-idle cores to minimize wakeups.
+kernel.timer_migration=1
+
+# Generic network tuninf.
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+net.ipv4.tcp_fastopen=3
+net.ipv4.tcp_keepalive_intvl=20
+net.ipv4.tcp_keepalive_probes=6
+net.ipv4.tcp_keepalive_time=180
+net.unix.max_dgram_qlen=8192
+
+# Reserve 3% 9f syatem memory.
+vm.admin_reserve_kbytes=$(( $(grep MemTotal /proc/meminfo | awk '{print $2}') * 3 / 100 ))
+
+vm.dirty_background_ratio=16
+vm.dirty_expire_centisecs=12000
+vm.dirty_ratio=24
+vm.dirty_writeback_centisecs=6000
+
+# Recommended value is 1 per 128kB of system RAM.
+vm.max_map_count=$(( $(grep MemTotal /proc/meminfo | awk '{print $2}') / 128 ))
+
+# Recommended is 6% of system memory.
+vm.min_free_kbytes=$(( $(grep MemTotal /proc/meminfo | awk '{print $2}') * 6 / 100 ))
+
+# Instruct the OOM killer to immediately kill the task that failed allocation.
+# Shpuld make OOM conditions more responsive.
+vm.oom_kill_allocating_task=1
+
+# Disable page-clustering on swap since we use zRAM.
+vm.page-cluster=0
+
+# Adjust virtual menory settings.
+vm.swappiness=200
+vm.vfs_cache_pressure=200
+
+# Watermark for swap is 33% of RAM. Very aggressive since we havw zRAM swap.
+vm.watermark_scale_factor=333
+EOF
+
+# Kernel parameter tweaks.
+# # If we dont set the hugepage policy here, they are unlikely to be used by
+# the time we enable it.
+if [[ -e /efi/EFI/steamos/grub.cfg ]]; then
+	for setting in \
+		drm_kms_helper.poll=0 \
+		gbpages \
+		mem_encrypt=off \
+		nmi_watchdog=0 \
+		nowatchdog \
+		nohz_full \
+		nvme.io_queue_depth=257 \
+		nvme.max_host_mem_size_mb=3072 \
+		nvme.poll_queues=16 \
+		nvme.sgl_threshold=2097153 \
+		nvme.use_cmb_sqes=1 \
+		nvme.use_threaded_interrupts=1 \
+		nvme.write_queues=8 \
+		nvme_core.admin_timeout=900 \
+		nvme_core.io_timeout=4294967295 \
+		nvme_core.shutdown_timeout=60 \
+		nvme_core.streams=1 \
+		transparent_hugepage=always \
+		virtio_blk.num_request_queues=8 \
+		virtio_blk.poll_queues=16 \
+		virtio_blk.queue_depth=2048
+	do
+		if ! grep -q $setting /efi/EFI/steamos/grub.cfg; then
+			sed -i -E 's@^(\s)*steamenv_boot(.*)$@\1steamenv_boot\2 '"$setting"'@g' /efi/EFI/steamos/grub.cfg
+			touch /tmp/.kernel-cmdline-modified
+		fi
+	done
+fi
+
+# Optimize system for power consumption.
+powertop --auto-tune > /dev/null 2>&1
+
+# Set sefault device schedulers.
+# Anything set incorrectly here will be corrected by the block device handlers.
+for block in $(ls /sys/block); do
+	if ! [[ -f /sys/block/$block/queue/scheduler ]]; then
+		continue
+	fi
+
+	if \
+		[[ -f /sys/block/$1/queue/rotational ]] && \
+		[[ 1 -eq $(cat /sys/block/$1/queue/rotational) ]]
+	then
+		scheduler=bfq
+	elif \
+		[[ -f /sys/block/$1/removable ]] && \
+		[[ 1 -eq $(cat /sys/block/$1/removable) ]]
+	then
+		scheduler=mq-deadline
+	else
+		scheduler=kyber
+	fi
+
+	upsert /sys/block/$block/queue/scheduler <<< $scheduler
+done
+
+# Perform block device specific optimizations.
+# Run in parallel to charging/discharging optimizations.
+update-devices zram mmcblk > /dev/null 2>&1 &
+
+# Apply power-state specific optimizations.
+if on_ac; then
+	/usr/sbin/steamos-extension-performance-tuning-udev-charging > /dev/null 2>&1
+else
+	/usr/sbin/steamos-extension-performance-tuning-udev-discharging > /dev/null 2>&1 
+fi
+
+wait
+exit 0

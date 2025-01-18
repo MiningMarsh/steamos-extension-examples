@@ -1,0 +1,13 @@
+[Unit]
+Description=Manage TDP
+DefaultDependencies=false
+Before=sysinit.target
+After=systemd-sysext.service
+Requires=systemd-sysext.service
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/steamos-extension-thermal-tdp 50 20 88:19 89:18 90:17 91:16 92:15
+
+[Install]
+WantedBy=sysinit.target

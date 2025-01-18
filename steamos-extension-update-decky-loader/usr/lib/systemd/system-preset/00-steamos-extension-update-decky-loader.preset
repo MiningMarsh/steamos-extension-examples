@@ -1,0 +1,2 @@
+enable steamos-extension-update-decky-loader.timer
+disable steamos-extension-update-decky-loader.service

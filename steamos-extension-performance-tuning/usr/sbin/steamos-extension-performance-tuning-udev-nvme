@@ -1,0 +1,32 @@
+#!/usr/bin/env zsh
+
+if [[ $# -eq 0 ]]; then
+	exit 1
+fi
+
+. /usr/lib/steamos-extension-performance-tuning.zsh
+
+if on_ac; then
+	nvmepm $1 0
+else
+	nvmepm $1 2
+fi
+
+systune /sys/block/$1 \
+	queue/scheduler kyber \
+	queue/add_random 0 \
+	queue/io_poll_delay 0 \
+	queue/iosched/fifo_batch 4 \
+	queue/iosched/front_merges 0 \
+	queue/iosched/read_expire 100 \
+	queue/iosched/read_lat_nsec 3333111 \
+	queue/iosched/write_expire 1000 \
+	queue/iosched/write_lat_nsec 333111111 \
+	queue/iosched/writes_starved 4 \
+	queue/max_sectors_kb 2048 \
+	queue/nomerges 1 \
+	queue/nr_requests 8 \
+	queue/read_ahead_kb 2048 \
+	queue/rq_affinity 2 \
+	queue/throttle_sample_time 3 \
+	queue/wbt_lat_usec 3333

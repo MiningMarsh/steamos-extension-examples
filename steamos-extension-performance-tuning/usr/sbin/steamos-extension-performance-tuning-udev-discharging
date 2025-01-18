@@ -1,0 +1,16 @@
+#!/usr/bin/env zsh
+
+. /usr/lib/steamos-extension-performance-tuning.zsh
+
+amdgpupm auto &
+cpugov schedutil &
+devicepm auto &
+pciepm powersupersave &
+scsipm med_power_with_dipm &
+sndpm true &
+wifipm on &
+
+update-btrfs &
+update-devices nvme sd &
+
+wait

@@ -1,0 +1,16 @@
+[Unit]
+Description=Load Extensions
+DefaultDependencies=no
+Before=sysinit.target
+After=systemd-sysext.service systemd-udevd.service
+Requires=systemd-sysext.service
+Wants=systemd-udevd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+TimeoutStartSec=infinity
+ExecStart=/etc/steamos-extension-loader
+
+[Install]
+WantedBy=sysinit.target

@@ -1,0 +1,70 @@
+#!/usr/bin/env zsh
+set -e
+
+if ! nm-online -x -q; then
+    echo Network manager reports no internet connection.
+    exit 1
+fi
+
+release_page='https://github.com/dreamer/boxtron/releases'
+
+version="$(curl --silent $release_page | grep -oE 'v[0-9]+[.][0-9]+[.][0-9]+' | sort -V | uniq | grep -v v0.75.0 | tail -n1)"
+
+install_dir="$HOME/.steam/root/compatibilitytools.d"
+
+function generate_vdf {
+cat <<EOF
+"compatibilitytools"
+{
+  "compat_tools"
+  {
+    "$1"
+    {
+      "install_path" "."
+      "display_name" "$2"
+      "from_oslist"  "windows"
+      "to_oslist"    "linux"
+    }
+  }
+}
+EOF
+}
+
+mkdir -p $install_dir
+cd $install_dir
+
+if [[ -f boxtron/finished-install ]]; then
+	if [[ "v$(grep -Eo '[0-9]+[.][0-9]+[.][0-9]+' boxtron/version.py)" == "$version" ]]; then
+		exit
+	fi
+fi
+
+mkdir -p ~/.config
+cat > ~/.config/boxtron.conf << EOF
+[confgen]
+force = true
+[midi]
+enable = true                            
+synthesiser = timidity
+soundfont = FluidR3_GM.sf2
+[dosbox]
+fullscreenmode = screen 0
+scaler = normal3x
+cmd = /usr/bin/steamos-extension-compat-tools-flatpak run --filesystem=%install\\_dir% io.github.dosbox-staging
+EOF
+
+if [[ -d boxtron ]]; then
+	rm -rf boxtron
+fi
+
+mkdir -p ~/.cache/steamos-extension-compat-tools
+if [[ -f ~/.cache/steamos-extension-compat-tools/boxtron.tar.xz ]]; then
+	rm -rf ~/.cache/steamos-extension-compat-tools/boxtron.tar.xz
+fi
+
+wget "$release_page/download/$version/boxtron.tar.xz" -O ~/.cache/steamos-extension-compat-tools/boxtron.tar.xz --quiet > /dev/null 2>&1
+xz -dc ~/.cache/steamos-extension-compat-tools/boxtron.tar.xz | tar xp
+rm -rf ~/.cache/steamos-extension-compat-tools/boxtron.tar.xz
+
+generate_vdf boxtron "DosBox" > boxtron/compatibilitytool.vdf
+touch boxtron/finished-install

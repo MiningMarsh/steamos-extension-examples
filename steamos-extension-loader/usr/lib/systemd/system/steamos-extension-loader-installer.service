@@ -1,0 +1,12 @@
+[Unit]
+Description=Install Extension Loader
+Requires=systemd-sysext.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+TimeoutStartSec=infinity
+ExecStart=/usr/sbin/steamos-extension-loader-installer
+
+[Install]
+WantedBy=multi-user.target

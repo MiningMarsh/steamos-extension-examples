@@ -1,0 +1,53 @@
+#!/usr/bin/env zsh
+set -ex
+
+curl 'https://raw.githubusercontent.com/hakavlad/nohang/refs/heads/master/LICENSE' > steamos-extension-nohang/usr/share/steamos-extension-nohang-LICENSE
+curl 'https://raw.githubusercontent.com/hakavlad/nohang/refs/heads/master/src/nohang' > steamos-extension-nohang/usr/sbin/steamos-extension-nohang
+chmod 644 steamos-extension-nohang/usr/share/steamos-extension-nohang-LICENSE
+chmod 755 steamos-extension-nohang/usr/sbin/steamos-extension-nohang
+
+curl 'https://raw.githubusercontent.com/hakavlad/prelockd/refs/heads/master/LICENSE' > steamos-extension-prelockd/usr/share/steamos-extension-prelockd-LICENSE
+curl 'https://raw.githubusercontent.com/hakavlad/prelockd/refs/heads/master/prelockd' > steamos-extension-prelockd/usr/sbin/steamos-extension-prelockd
+chmod 644 steamos-extension-prelockd/usr/share/steamos-extension-prelockd-LICENSE
+chmod 755 steamos-extension-prelockd/usr/sbin/steamos-extension-prelockd
+
+
+function compress() { 
+	local target=$1
+	shift
+	mksquashfs $@ $target \
+		-reproducible -mkfs-time 0 -all-time 0 \
+		-root-uid 0 -root-gid 0 \
+		-force-uid 0 -force-gid 0 \
+		-root-mode 777 -root-time 0 -all-root \
+		-no-exports -no-xattrs -tailends \
+		-keep-as-directory -no-strip \
+		-comp zstd -b 128K \
+		-mem 8G -processors $(nproc --all) \
+		-Xcompression-level 22 \
+		-read-queue 2048 \
+		-write-queue 2048 \
+		-fragment-queue 2048
+}
+
+local temp=$(mktemp -d)
+for dir in $(ls | grep -v build); do
+	rsync $dir/ -rav --delete --delete-before $temp
+	mkdir -p $temp/usr/lib/extension-release.d
+	echo 'ID=_any' > $temp/usr/lib/extension-release.d/extension-release.$dir
+	mkdir -p /var/lib/extensions
+	if [[ -e /var/lib/extensions/$dir.raw ]]; then
+		rm -rf /var/lib/extensions/$dir.raw
+	fi
+	pushd $temp
+	compress /var/lib/extensions/$dir.raw *
+	popd
+done
+rm -rf $temp
+
+for extension in /var/lib/extensions/*.raw(N); do
+	local basename=$(echo $extension | rev | cut -f2- -d. | cut -f1 -d/ | rev)
+	if ! [[ -d $basename ]]; then
+		rm -rf $extension
+	fi
+done

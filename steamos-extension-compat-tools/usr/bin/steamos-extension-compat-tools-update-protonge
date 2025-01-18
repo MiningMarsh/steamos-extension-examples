@@ -1,0 +1,59 @@
+#!/usr/bin/env zsh
+set -e
+
+if ! nm-online -x -q; then
+    exit 1
+fi
+
+release_page='https://github.com/GloriousEggroll/proton-ge-custom/releases'
+
+version="$(curl --silent $release_page | grep -Eo 'GE-Proton[0-9]+-[0-9]+' | sort -V | uniq | tail -n1)"
+
+install_dir="$HOME/.steam/root/compatibilitytools.d"
+
+function generate_vdf {
+cat <<EOF
+"compatibilitytools"
+{
+  "compat_tools"
+  {
+    "$1"
+    {
+      "install_path" "."
+      "display_name" "$2"
+      "from_oslist"  "windows"
+      "to_oslist"    "linux"
+    }
+  }
+}
+EOF
+}
+
+mkdir -p $install_dir
+cd $install_dir
+
+if [[ -f protonge/finished-install ]]; then
+	if [[ -f protonge/version ]]; then
+		if [[ "$(cut -d ' ' -f2 protonge/version)" == "$version" ]]; then
+			exit
+		fi
+	fi
+fi
+
+if [[ -d protonge ]]; then
+	rm -rf protonge
+fi
+
+mkdir protonge
+cd protonge 
+
+mkdir -p ~/.cache/steamos-extension-compat-tools/
+if [[ -f ~/.cache/steamos-extension-compat-tools/protonge.tar.gz ]]; then
+	rm -rf ~/.cache/steamos-extension-compat-tools/protonge.tar.gz
+fi
+wget "$release_page/download/$version/$version.tar.gz" -O ~/.cache/steamos-extension-compat-tools/protonge.tar.gz --quiet > /dev/null 2>&1
+tar xpf ~/.cache/steamos-extension-compat-tools/protonge.tar.gz --strip-components=1
+rm -rf ~/.cache/steamos-extension-compat-tools/protonge.tar.gz
+
+generate_vdf protonge "Proton GE" > compatibilitytool.vdf
+touch finished-install

@@ -1,0 +1,1 @@
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="mmcblk[0-9]|mmcblk[0-9][0-9]", RUN+="/usr/sbin/steamos-extension-performance-tuning-dispatch mmcblk %k"

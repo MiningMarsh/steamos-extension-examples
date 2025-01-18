@@ -1,0 +1,61 @@
+[Unit]
+Description=Manage System Latency
+Documentation=man:nohang(8) https://github.com/hakavlad/nohang
+Conflicts=nohang.service
+After=sysinit.target
+
+[Service]
+ExecStart=/usr/sbin/steamos-extension-nohang --monitor --config /usr/share/steamos-extension-nohang-desktop.conf
+Slice=hostcritical.slice
+SyslogIdentifier=nohang-desktop
+KillMode=mixed
+Restart=always
+RestartSec=0
+
+CPUSchedulingResetOnFork=true
+RestrictRealtime=yes
+
+TasksMax=25
+MemoryMax=100M
+MemorySwapMax=100M
+
+UMask=0027
+ProtectSystem=strict
+ReadWritePaths=/var/log
+InaccessiblePaths=/home /root
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectHostname=true
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+PrivateTmp=true
+DeviceAllow=/dev/kmsg rw
+DevicePolicy=closed
+
+# Capabilities whitelist:
+# CAP_KILL is required to send signals
+# CAP_IPC_LOCK  is required to mlockall()
+# CAP_SYS_PTRACE is required to check /proc/[pid]/exe realpathes
+# CAP_DAC_READ_SEARCH is required to read /proc/[pid]/environ files
+# CAP_DAC_OVERRIDE fixes #94
+# CAP_DAC_READ_SEARCH CAP_AUDIT_WRITE CAP_SETUID CAP_SETGID CAP_SYS_RESOURCE
+#   are required to send GUI notifications
+# CAP_SYSLOG is required to check /dev/kmsg for OOM events
+
+CapabilityBoundingSet=CAP_KILL CAP_IPC_LOCK CAP_SYS_PTRACE \
+CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_AUDIT_WRITE CAP_SETUID CAP_SETGID \
+CAP_SYS_RESOURCE CAP_SYSLOG
+
+# `PrivateNetwork=true` breaks GUI notifications on oldstable distros
+# (Debian 8, CentOS 7, Linux Mint 18). On modern distros you can set
+# PrivateNetwork=true for security reasons.
+PrivateNetwork=true
+
+# Set realtime CPU scheduling policy if you want
+CPUSchedulingPolicy=rr
+CPUSchedulingPriority=1
+
+[Install]
+WantedBy=multi-user.target

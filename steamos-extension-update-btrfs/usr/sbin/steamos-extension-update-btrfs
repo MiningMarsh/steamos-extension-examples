@@ -1,0 +1,7 @@
+#!/usr/bin/env zsh
+set -e
+
+t="$(mktemp -d)"
+curl -sSL https://gitlab.com/popsulfr/steamos-btrfs/-/archive/main/steamos-btrfs-main.tar.gz | tar -xzf - -C "$t" --strip-components=1
+"$t/install.sh" --noninteractive || true
+rm -rf "$t"

@@ -1,0 +1,7 @@
+[Unit]
+Description=Update steamos-btrfs
+Requires=network.target network-online.target systemd-sysext.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/steamos-extension-update-btrfs

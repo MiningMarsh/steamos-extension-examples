@@ -1,0 +1,6 @@
+[Unit]
+Description=Update Boxtron Compatibility Tool
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/steamos-extension-compat-tools-update-boxtron

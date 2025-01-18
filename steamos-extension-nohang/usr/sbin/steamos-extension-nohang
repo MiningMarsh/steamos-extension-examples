@@ -1,0 +1,4107 @@
+#!/usr/bin/env python3
+"""A sophisticated low memory handler."""
+
+import os
+from ctypes import CDLL
+from time import sleep, monotonic
+from operator import itemgetter
+from sys import stdout, stderr, argv, exit
+from re import search
+from re import error as invalid_re
+from signal import signal, SIGKILL, SIGTERM, SIGINT, SIGQUIT, SIGHUP, SIGUSR1
+
+
+def read_path(path):
+    """
+    """
+    try:
+        fd[path].seek(0)
+    except ValueError:
+        try:
+            fd[path] = open(path, 'rb', buffering=0)
+        except FileNotFoundError:
+            return None
+    except KeyError:
+        try:
+            fd[path] = open(path, 'rb', buffering=0)
+        except FileNotFoundError:
+            return None
+    try:
+        return fd[path].read(99999).decode()
+    except OSError:
+        fd[path].close()
+        return None
+
+
+def missing_config_key(key):
+    """
+    """
+    errprint('ERROR: invalid config: missing key "{}"'.format(key))
+    exit(1)
+
+
+def invalid_config_key_value(key):
+    """
+    """
+    errprint('ERROR: invalid config: invalid "{}" value'.format(key))
+    exit(1)
+
+
+def check_permissions():
+    """
+    """
+    try:
+        os.path.realpath('/proc/1/exe')
+    except Exception as e:
+        log('WARNING: missing CAP_SYS_PTRACE: {}'.format(e))
+    try:
+        os.kill(1, 0)
+    except Exception as e:
+        log('WARNING: cannot send a signal: {}'.format(e))
+    try:
+        rline1('/proc/1/oom_score')
+    except Exception as e:
+        errprint('ERROR: {}'.format(e))
+        exit(1)
+
+
+def memload():
+    """
+    """
+    from random import random
+    r = str(random())[2:8]
+    hi = 'Enter the numbers {} to confirm that you are not a robot: '.format(r)
+    try:
+        t0 = monotonic()
+        inp = input(hi)
+    except KeyboardInterrupt:
+        errprint('KeyboardInterrupt\nExit')
+        exit(1)
+    try:
+        os.setreuid(1, 1)
+    except Exception:
+        pass
+    if inp != r:
+        errprint('Captcha is not passed ("{}" != "{}")'.format(inp, r))
+        errprint('memload() is not for robots\nExit')
+        exit(1)
+    if monotonic() - t0 > 30:
+        errprint('Captcha is not passed (timeout expired)')
+        errprint('memload() is not for robots\nExit')
+        exit(1)
+    else:
+        print('-' * 68)
+    with open('/proc/meminfo') as f:
+        mem_list = f.readlines()
+    mem_list_names = []
+    for s in mem_list:
+        mem_list_names.append(s.split(':')[0])
+    try:
+        mem_available_index = mem_list_names.index('MemAvailable')
+    except ValueError:
+        errprint('Your Linux kernel is too old, Linux 3.14+ required\nExit')
+    swap_free_index = mem_list_names.index('SwapFree')
+
+    def check_mem_and_swap():
+        """find mem_available, swap_total, swap_free"""
+        with open('/proc/meminfo') as f:
+            for n, line in enumerate(f):
+                if n == mem_available_index:
+                    mem_available = int(line.split(':')[1][:-4])
+                    continue
+                if n == swap_free_index:
+                    swap_free = int(line.split(':')[1][:-4])
+                    break
+        return mem_available, swap_free
+
+    def print_mem(mem_available, swap_free):
+        print('\033MMemAvailable: {} MiB, SwapFree: {} MiB     '
+              '     '.format(
+                  round(mem_available / 1024),
+                  round(swap_free / 1024)))
+
+    hi = 'Warning! The process will consume memory until 40 MiB of mem' \
+         'ory\n(MemAvailable + SwapFree) remain free, and it will be t' \
+         'erminated via SIGUSR1\nat the end. This may cause the system' \
+         ' to freeze and processes to terminate.\nDo you want to conti' \
+         'nue? [No/Yes] '
+    try:
+        inp = input(hi)
+    except KeyboardInterrupt:
+        errprint('KeyboardInterrupt\nExit')
+        exit(1)
+    if inp != 'Yes':
+        print('Exit')
+        exit()
+    else:
+        print('Memory consumption has started!\n')
+
+    ex = []
+    z = monotonic()
+    self_pid = os.getpid()
+
+    while True:
+        try:
+            mem_available, swap_free = check_mem_and_swap()
+            x = mem_available + swap_free
+            if x <= 1024 * 40:  # 40 MiB
+                print_mem(mem_available, swap_free)
+                print('Self terminating by SIGUSR1')
+                os.kill(self_pid, SIGUSR1)
+            else:
+                ex.append(bytearray(1024 * 40))  # step size is 40 KiB
+                u = monotonic() - z
+                if u <= 0.01:
+                    continue
+                z = monotonic()
+                print_mem(mem_available, swap_free)
+        except KeyboardInterrupt:
+            errprint('KeyboardInterrupt')
+            errprint('Self terminating by the SIGUSR1 signal')
+            os.kill(self_pid, SIGUSR1)
+        except MemoryError:
+            errprint('MemoryError')
+            errprint('Self terminating by the SIGUSR1 signal')
+            os.kill(self_pid, SIGUSR1)
+
+
+def parse_zfs_arcstats():
+    """
+    Parses '/proc/spl/kstat/zfs/arcstats'.
+    Returns a dictionary with 'name' as keys and 'data' as values.
+    """
+    parsed_data = {}
+
+    with open(arcstats_path, 'r') as as_file:
+        lines = iter(as_file.readlines())
+
+        # consume lines until the header row:
+        for line in lines:
+            if 'name' in line and 'data' in line:
+                break
+
+        # Continue iterating over the remaining lines
+        for line in lines:
+            if line.strip():
+                parts = line.split()
+                name = parts[0]
+                data_type = parts[1]
+                data = parts[2]
+                if data_type == '4':
+                    data = int(data)
+                parsed_data[name] = data
+
+    return parsed_data
+
+
+def zfs_arc_available():
+    """returns how many KiB of the zfs ARC are reclaimable"""
+    stats = parse_zfs_arcstats()
+
+    c_rec = max(stats['size'] - stats['c_min'], 0)
+
+    # old zfs: consider arc_meta_used, arc_meta_min
+    if 'arc_meta_used' in stats and 'arc_meta_min' in stats:
+        meta_rec = max(stats['arc_meta_used'] - stats['arc_meta_min'], 0)
+        return (c_rec + meta_rec) / 1024
+
+    # new zfs: metadata is no longer accounted for separately,
+    # https://github.com/openzfs/zfs/commit/a8d83e2a24de6419dc58d2a7b8f38904985726cb
+    return c_rec / 1024
+
+
+def exe(cmd):
+    """ execute cmd in subprocess.Popen()
+    """
+    cmd_list = shlex.split(cmd)
+
+    cmd_num_dict['cmd_num'] += 1
+    cmd_num = cmd_num_dict['cmd_num']
+    th_name = threading.current_thread().name
+
+    log('Executing Command-{} {} with timeout {}s in {}'.format(
+        cmd_num,
+        cmd_list,
+        exe_timeout,
+        th_name,
+    ))
+    t3 = monotonic()
+    try:
+        with Popen(cmd_list) as proc:
+            try:
+                proc.wait(timeout=exe_timeout)
+                exit_status = proc.poll()
+                t4 = monotonic()
+                log('Command-{} execution completed in {}s; exit status'
+                    ': {}'.format(cmd_num, round(t4 - t3, 3), exit_status))
+            except TimeoutExpired:
+                proc.kill()
+                log('Timeout expired for Command-{}'.format(cmd_num))
+    except Exception as e:
+        log('Exception in {}: {}'.format(th_name, e))
+
+
+def start_thread(func, *a, **k):
+    """ run function in a new thread
+    """
+    th = threading.Thread(target=func, args=a, kwargs=k, daemon=True)
+    th_name = th.name
+
+    if debug_threading:
+        log('Starting {} from {}'.format(
+            th_name, threading.current_thread().name
+        ))
+
+    try:
+
+        t1 = monotonic()
+        th.start()
+        t2 = monotonic()
+
+        if debug_threading:
+            log('{} has started in {} ms, {} threads are '
+                'currently alive'.format(th_name, round((
+                    t2 - t1) * 1000, 1), threading.active_count()))
+
+    except RuntimeError:
+        log('RuntimeError: cannot start {}'.format(th_name))
+        return 1
+
+
+def re_pid_environ(pid):
+    """
+    read environ of 1 process
+    returns tuple with USER, DBUS, DISPLAY like follow:
+    ('user', 'DISPLAY=:0',
+     'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus')
+    returns None if these vars is not in /proc/[pid]/environ
+    """
+    try:
+        with open('/proc/' + pid + '/environ', 'rb') as f:
+            env = f.read().decode('utf-8', 'ignore')
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+
+    if display_env in env and dbus_env in env and user_env in env:
+
+        env_list = env.split('\x00')
+
+        # iterating over a list of process environment variables
+        for i in env_list:
+
+            # exclude Display Manager's user
+            if i.startswith('HOME=/var'):
+                return None
+
+            if i.startswith(user_env):
+                user = i
+                if user == 'USER=root':
+                    return None
+                continue
+
+            if i.startswith(display_env):
+                if i[-2] == '.':
+                    # DISPLAY=:0.0 -> DISPLAY=:0
+                    display = i[:-2]
+                else:
+                    display = i
+                if len(display) > 10:
+                    # skip DISPLAY >= :10
+                    return None
+                continue
+
+            if i.startswith(dbus_env):
+                dbus = i
+                continue
+
+        try:
+            return user.partition('USER=')[2], display, dbus
+        except UnboundLocalError:
+            return None
+
+
+def root_notify_env():
+    """return set(user, display, dbus)"""
+    unsorted_envs_list = []
+    # iterates over processes, find processes with suitable env
+    for pid in os.listdir('/proc'):
+
+        if is_alive(pid):
+            one_env = re_pid_environ(pid)
+            unsorted_envs_list.append(one_env)
+
+    env = set(unsorted_envs_list)
+    env.discard(None)
+
+    # deduplicate dbus
+    new_env = []
+    end = []
+    for i in env:
+        key = i[0] + i[1]
+        if key not in end:
+            end.append(key)
+            new_env.append(i)
+        else:
+            continue
+
+    return new_env
+
+
+def pop(cmd):
+    """ run cmd in subprocess.Popen()
+    """
+    cmd_num_dict['cmd_num'] += 1
+    cmd_num = cmd_num_dict['cmd_num']
+
+    if swap_total == 0:
+        wait_time = 15
+    else:
+        wait_time = 30
+
+    th_name = threading.current_thread().name
+
+    log('Executing Command-{} {} with timeout {}s in {}'.format(
+        cmd_num,
+        cmd,
+        wait_time,
+        th_name
+    ))
+
+    t3 = monotonic()
+
+    try:
+        with Popen(cmd) as proc:
+            try:
+                proc.wait(timeout=wait_time)
+                err = proc.poll()
+                t4 = monotonic()
+
+                if debug_gui_notifications:
+                    log('Command-{} execution completed in {}s; exit status'
+                        ': {}'.format(cmd_num, round(t4 - t3, 3), err))
+
+            except TimeoutExpired:
+                proc.kill()
+                if debug_gui_notifications:
+                    log('Timeout expired for Command-{}'.format(cmd_num))
+
+    except Exception as e:
+        log('Exception in {}: {}'.format(th_name, e))
+
+
+def send_notification(title, body):
+    """
+    """
+    if self_uid != 0:
+        cmd = ['notify-send', '--icon=dialog-warning', title, body]
+        pop(cmd)
+        return None
+
+    t1 = monotonic()
+
+    if envd['t'] is None:
+
+        list_with_envs = root_notify_env()
+        envd['list_with_envs'] = list_with_envs
+        envd['t'] = monotonic()
+        cached_env = ''
+
+    elif monotonic() - envd['t'] > env_cache_time:
+
+        list_with_envs = root_notify_env()
+        envd['list_with_envs'] = list_with_envs
+        envd['t'] = monotonic()
+        cached_env = ''
+
+    else:
+
+        list_with_envs = envd['list_with_envs']
+        cached_env = ' (cached)'
+
+    t2 = monotonic()
+
+    if debug_gui_notifications:
+        log('Found env in {} ms{}'.format(round((t2 - t1) * 1000), cached_env))
+        log('  Title:    {}'.format([title]))
+        log('  Body:     {}'.format([body]))
+        log('  Env list: {}'.format(list_with_envs))
+
+    list_len = len(list_with_envs)
+
+    # if somebody logged in with GUI
+    if list_len > 0:
+
+        # iterating over logged-in users
+        for i in list_with_envs:
+            username, display_env, dbus_env = i[0], i[1], i[2]
+            display_tuple = display_env.partition('=')
+            dbus_tuple = dbus_env.partition('=')
+            display_value = display_tuple[2]
+            dbus_value = dbus_tuple[2]
+
+            cmd = [
+                'sudo', '-u', username,
+                'env',
+                'DISPLAY=' + display_value,
+                'DBUS_SESSION_BUS_ADDRESS=' + dbus_value,
+                'notify-send',
+                '--icon=dialog-warning',
+                '--app-name=nohang',
+                title,
+                body
+            ]
+
+            start_thread(pop, cmd)
+
+    else:
+        if debug_gui_notifications:
+            log('Nobody logged-in with GUI. Nothing to do.')
+
+
+def send_notify_warn():
+    """ Implement Low memory warnings
+    """
+    log('Warning threshold exceeded')
+
+    log_meminfo()
+
+    if check_warning_exe:
+        start_thread(exe, warning_exe)
+
+    else:
+        title = 'Low memory'
+
+        shared = meminfo()['shared']
+        sh_percent = shared / mem_total
+
+        if sh_percent > 0.6:
+            body = 'Save your unsaved data!\nClear tmpfs! Shmem: {}%'.format(
+                round(sh_percent * 100))
+        elif sh_percent > 0.3:
+            body = 'Save your unsaved data!\nClose unused apps!\nClear ' \
+                   'tmpfs! Shmem: {}%'.format(round(sh_percent * 100))
+        else:
+            body = 'Save your unsaved data!\nClose unused apps!'
+        """"
+        body = 'MemAvail: {}%\nSwapFree: {}%'.format(
+            round(mem_available / mem_total * 100),
+            round(swap_free / (swap_total + 0.1) * 100)
+        )
+        """
+        start_thread(send_notification, title, body)
+
+
+def send_notify(threshold, name, pid):
+    """
+    Notificate about OOM Preventing.
+
+    threshold: key for notify_sig_dict
+    name: str process name
+    pid: str process pid
+    """
+
+    title = 'System hang prevention'
+
+    if hide_corrective_action_type:
+        body = 'Corrective action applied'
+    else:
+        body = '<b>{}</b> [{}] <b>{}</b>'.format(
+            notify_sig_dict[threshold],
+            pid,
+            name.replace(
+                # symbol '&' can break notifications in some themes,
+                # therefore it is replaced by '*'
+                '&', '*'
+            ))
+
+    start_thread(send_notification, title, body)
+
+
+def send_notify_etc(pid, name, command):
+    """
+    Notificate about OOM Preventing.
+
+    command: str command that will be executed
+    name: str process name
+    pid: str process pid
+    """
+    title = 'System hang prevention'
+    if hide_corrective_action_type:
+        body = 'Corrective action applied'
+    else:
+        body = '<b>Victim is</b> [{}] <b>{}</b>\nExecute the command:\n<b>' \
+               '{}</b>'.format(pid, name.replace(
+                   '&', '*'), command.replace('&', '*'))
+
+    start_thread(send_notification, title, body)
+
+
+def check_config():
+    """
+    """
+    log('\n0. Check kernel messages for OOM events')
+    log('    @check_kmsg:    <{}>'.format(check_kmsg))
+    log('    @debug_kmsg:    <{}>'.format(debug_kmsg))
+
+    log('\n1. Common zram settings')
+
+    log('    zram_checking_enabled:   {}'.format(zram_checking_enabled))
+
+    log('\n2. Common PSI settings')
+
+    log('    psi_checking_enabled:    {}'.format(psi_checking_enabled))
+    log('    psi_path:                {}'.format(psi_path))
+    log('    psi_metrics:             {}'.format(psi_metrics))
+    log('    psi_excess_duration:     {} sec'.format(psi_excess_duration))
+    log('    psi_post_action_delay:   {} sec'.format(psi_post_action_delay))
+
+    log('\n3. Poll rate')
+
+    log('    fill_rate_mem:   {}'.format(fill_rate_mem))
+    log('    fill_rate_swap:  {}'.format(fill_rate_swap))
+    log('    fill_rate_zram:  {}'.format(fill_rate_zram))
+    log('    max_sleep:       {} sec'.format(max_sleep))
+    log('    min_sleep:       {} sec'.format(min_sleep))
+
+    log('\n4. Warnings and notifications')
+
+    log('    post_action_gui_notifications:  {}'.format(
+        post_action_gui_notifications))
+    log('    hide_corrective_action_type:    {}'.format(
+        hide_corrective_action_type))
+    log('    low_memory_warnings_enabled:    {}'.format(
+        low_memory_warnings_enabled))
+    log('    warning_exe:                    {}'.format(warning_exe))
+    log('    warning_threshold_min_mem:      {} MiB, {} %'.format(round(
+        warning_threshold_min_mem_mb), round(
+            warning_threshold_min_mem_percent, 1)))
+    log('    warning_threshold_min_swap:     {}'.format
+        (warning_threshold_min_swap))
+    log('    warning_threshold_max_zram:     {} MiB, {} %'.format(round(
+        warning_threshold_max_zram_mb), round(
+            warning_threshold_max_zram_percent, 1)))
+    log('    warning_threshold_max_psi:      {}'.format(
+        warning_threshold_max_psi))
+    log('    min_post_warning_delay:         {} sec'.format(
+        min_post_warning_delay))
+    log('    env_cache_time:                 {}'.format(env_cache_time))
+
+    log('\n5. Soft threshold')
+
+    log('    soft_threshold_min_mem:   {} MiB, {} %'.format(
+        round(soft_threshold_min_mem_mb), round(
+            soft_threshold_min_mem_percent, 1)))
+    log('    soft_threshold_min_swap:  {}'.format(soft_threshold_min_swap))
+    log('    soft_threshold_max_zram:  {} MiB, {} %'.format(
+        round(soft_threshold_max_zram_mb), round(
+            soft_threshold_max_zram_percent, 1)))
+    log('    soft_threshold_max_psi:   {}'.format(soft_threshold_max_psi))
+
+    log('\n6. Hard threshold')
+
+    log('    hard_threshold_min_mem:   {} MiB, {} %'.format(
+        round(hard_threshold_min_mem_mb), round(
+            hard_threshold_min_mem_percent, 1)))
+    log('    hard_threshold_min_swap:  {}'.format(hard_threshold_min_swap))
+    log('    hard_threshold_max_zram:  {} MiB, {} %'.format(
+        round(hard_threshold_max_zram_mb), round(
+            hard_threshold_max_zram_percent, 1)))
+    log('    hard_threshold_max_psi:   {}'.format(hard_threshold_max_psi))
+
+    log('\n7. Customize victim selection: adjusting badness of processes')
+
+    log('\n7.1. Ignore positive oom_score_adj')
+    log('    ignore_positive_oom_score_adj:  {}'.format(
+        ignore_positive_oom_score_adj))
+
+    log('\n7.2. Adjusting badness of processes by matching with '
+        'regular expressions')
+
+    log('7.2.1. Matching process names with RE patterns')
+    if len(badness_adj_re_name_list) > 0:
+        log('    badness_adj:  regexp:')
+        for i in badness_adj_re_name_list:
+            log('    {:>12}  {}'.format(i[0], i[1]))
+    else:
+        log('    (not set)')
+
+    log('7.2.2. Matching CGroup_v1-line with RE patterns')
+    if len(badness_adj_re_cgroup_v1_list) > 0:
+        log('    badness_adj:  regexp:')
+        for i in badness_adj_re_cgroup_v1_list:
+            log('    {:>12}  {}'.format(i[0], i[1]))
+    else:
+        log('    (not set)')
+
+    log('7.2.3. Matching CGroup_v2-line with RE patterns')
+    if len(badness_adj_re_cgroup_v2_list) > 0:
+        log('    badness_adj:  regexp:')
+        for i in badness_adj_re_cgroup_v2_list:
+            log('    {:>12}  {}'.format(i[0], i[1]))
+    else:
+        log('    (not set)')
+
+    log('7.2.4. Matching eUIDs with RE patterns')
+    if len(badness_adj_re_uid_list) > 0:
+        log('    badness_adj:  regexp:')
+        for i in badness_adj_re_uid_list:
+            log('    {:>12}  {}'.format(i[0], i[1]))
+    else:
+        log('    (not set)')
+
+    log('7.2.5. Matching realpath with RE patterns')
+    if len(badness_adj_re_realpath_list) > 0:
+        log('    badness_adj:  regexp:')
+        for i in badness_adj_re_realpath_list:
+            log('    {:>12}  {}'.format(i[0], i[1]))
+    else:
+        log('    (not set)')
+
+    log('7.2.6. Matching /proc/[pid]/cwd realpath with RE patterns')
+    if len(badness_adj_re_cwd_list) > 0:
+        log('    badness_adj:  regexp:')
+        for i in badness_adj_re_cwd_list:
+            log('    {:>12}  {}'.format(i[0], i[1]))
+    else:
+        log('    (not set)')
+
+    log('7.2.7. Matching cmdlines with RE patterns')
+    if len(badness_adj_re_cmdline_list) > 0:
+        log('    badness_adj:  regexp:')
+        for i in badness_adj_re_cmdline_list:
+            log('    {:>12}  {}'.format(i[0], i[1]))
+    else:
+        log('    (not set)')
+
+    log('7.2.8. Matching environ with RE patterns')
+    if len(badness_adj_re_environ_list) > 0:
+        log('    badness_adj:  regexp:')
+        for i in badness_adj_re_environ_list:
+            log('    {:>12}  {}'.format(i[0], i[1]))
+    else:
+        log('    (not set)')
+
+    log('\n8. Customize soft corrective actions')
+
+    if len(soft_actions_list) > 0:
+        log('    Match by:  regexp:       command: ')
+        for i in soft_actions_list:
+            log('    {} {}  {}'.format(i[0].ljust(10), i[1].ljust(12), i[2]))
+    else:
+        log('    (not set)')
+
+    log('\n9. Misc')
+
+    log('    max_soft_exit_time:         {} sec'.format(max_soft_exit_time))
+
+    log('    post_kill_exe:              {}'.format(post_kill_exe))
+
+    log('    min_badness:                {}'.format(min_badness))
+
+    log('    post_soft_action_delay:     {} sec'.format(
+        post_soft_action_delay))
+    log('    post_zombie_delay:          {} sec'.format(post_zombie_delay))
+    log('    victim_cache_time:          {} sec'.format(victim_cache_time))
+    log('    exe_timeout:                {} sec'.format(exe_timeout))
+
+    log('\n10. Verbosity')
+
+    log('    print_config_at_startup:    {}'.format(print_config_at_startup))
+
+    log('    print_mem_check_results:    {}'.format(print_mem_check_results))
+    log('    min_mem_report_interval:    {} sec'.format(
+        min_mem_report_interval))
+
+    log('    print_proc_table:           {}'.format(print_proc_table))
+    log('    extra_table_info:           {}'.format(extra_table_info))
+
+    log('    print_victim_status:        {}'.format(print_victim_status))
+    log('    print_victim_cmdline:       {}'.format(print_victim_cmdline))
+    log('    max_victim_ancestry_depth:  {}'.format(max_victim_ancestry_depth))
+
+    log('    print_statistics:           {}'.format(print_statistics))
+
+    log('    debug_gui_notifications:    {}'.format(debug_gui_notifications))
+    log('    debug_psi:                  {}'.format(debug_psi))
+    log('    debug_sleep:                {}'.format(debug_sleep))
+    log('    debug_threading:            {}'.format(debug_threading))
+    log('    separate_log:               {}'.format(separate_log))
+
+    if check_config_flag:
+        log('\nconfig is OK')
+        exit()
+
+
+def get_swap_threshold_tuple(string, key):
+    # re (Num %, True) or (Num KiB, False)
+    """Returns KiB value if abs val was set in config, or tuple with %"""
+
+    # return tuple with abs and bool: (abs %, True) or (abs MiB, False)
+    if string.endswith('%'):
+        value = string_to_float_convert_test(string[:-1])
+        if value is None or value < 0 or value > 100:
+            invalid_config_key_value(key)
+        return value, True
+
+    elif string.endswith('M'):
+        value = string_to_float_convert_test(string[:-1])
+        if value is None or value < 0:
+            invalid_config_key_value(key)
+        return value, False
+
+    else:
+        invalid_config_key_value(key)
+
+
+def find_cgroup_indexes():
+    """ Find cgroup-line positions in /proc/*/cgroup file.
+    """
+    cgroup_v1_index = cgroup_v2_index = None
+
+    with open('/proc/self/cgroup') as f:
+        for index, line in enumerate(f):
+            if ':name=' in line:
+                cgroup_v1_index = index
+            if line.startswith('0::'):
+                cgroup_v2_index = index
+
+    return cgroup_v1_index, cgroup_v2_index
+
+
+def pid_to_rss(pid):
+    """
+    """
+    try:
+        rss = int(rline1(
+            '/proc/{}/statm'.format(pid)).split(' ')[1]) * SC_PAGESIZE
+    except (IndexError, FileNotFoundError, ProcessLookupError):
+        rss = None
+    return rss
+
+
+def pid_to_vm_size(pid):
+    """
+    """
+    try:
+        vm_size = int(rline1(
+            '/proc/{}/statm'.format(pid)).partition(' ')[0]) * SC_PAGESIZE
+    except (IndexError, FileNotFoundError, ProcessLookupError):
+        vm_size = None
+    return vm_size
+
+
+def signal_handler(signum, frame):
+    """
+    """
+    for i in sig_list:
+        signal(i, signal_handler_inner)
+
+    log('Got the {} signal '.format(
+        sig_dict[signum]))
+
+    if len(fd) > 0:
+        for f in fd:
+            fd[f].close()
+
+    print_stat_dict()
+
+    m = monotonic() - start_time
+    user_time, system_time = os.times()[0:2]
+    p_time = user_time + system_time
+    p_percent = p_time / m * 100
+    log('Process time: {}s (average: {}%); exit.'.format(
+        round(p_time, 2), round(p_percent, 2)))
+
+    exit()
+
+
+def signal_handler_inner(signum, frame):
+    """
+    """
+    log('Got the {} signal (ignored) '.format(
+        sig_dict[signum]))
+
+
+def write(path, string):
+    """
+    """
+    with open(path, 'w') as f:
+        f.write(string)
+
+
+def valid_re(reg_exp):
+    """Validate regular expression.
+    """
+    try:
+        search(reg_exp, '')
+    except invalid_re:
+        log('Invalid config: invalid regexp: {}'.format(reg_exp))
+        exit(1)
+
+
+def func_print_proc_table():
+    """
+    """
+    print_proc_table = True
+    find_victim(print_proc_table)
+    exit()
+
+
+def log(*msg):
+    """
+    """
+    print(*msg)
+    if separate_log:
+        logging.info(*msg)
+
+
+def print_version():
+    """
+    """
+    if os.path.exists('/usr/local/share/nohang/version'):
+        v = rline1('/usr/local/share/nohang/version')
+    else:
+        try:
+            v = rline1('/usr/share/nohang/version')
+        except FileNotFoundError:
+            v = None
+    if v is None:
+        print('nohang unknown version')
+    else:
+        print('nohang ' + v)
+    exit()
+
+
+def psi_file_mem_to_metrics(psi_path):
+    """
+    """
+    with open(psi_path) as f:
+        psi_list = f.readlines()
+    some_list, full_list = psi_list[0].split(' '), psi_list[1].split(' ')
+    some_avg10 = some_list[1].split('=')[1]
+    some_avg60 = some_list[2].split('=')[1]
+    some_avg300 = some_list[3].split('=')[1]
+    full_avg10 = full_list[1].split('=')[1]
+    full_avg60 = full_list[2].split('=')[1]
+    full_avg300 = full_list[3].split('=')[1]
+    return (some_avg10, some_avg60, some_avg300,
+            full_avg10, full_avg60, full_avg300)
+
+
+def pid_to_cgroup_v1(pid):
+    """
+    """
+    cgroup_v1 = ''
+    try:
+        with open('/proc/' + pid + '/cgroup') as f:
+            for index, line in enumerate(f):
+                if index == cgroup_v1_index:
+                    cgroup_v1 = '/' + line.partition('/')[2][:-1]
+        return cgroup_v1
+    except (FileNotFoundError, ProcessLookupError):
+        return ''
+
+
+def pid_to_cgroup_v2(pid):
+    """
+    """
+    cgroup_v2 = ''
+    try:
+        with open('/proc/' + pid + '/cgroup') as f:
+            for index, line in enumerate(f):
+                if index == cgroup_v2_index:
+                    cgroup_v2 = line[3:-1]
+        return cgroup_v2
+    except (FileNotFoundError, ProcessLookupError):
+        return ''
+
+
+def pid_to_starttime(pid):
+    """ handle FNF error!
+    """
+    try:
+        starttime = rline1('/proc/' + pid + '/stat').rpartition(')')[
+            2].split(' ')[20]
+
+    except UnicodeDecodeError:
+        with open('/proc/' + pid + '/stat', 'rb') as f:
+            starttime = f.read().decode('utf-8', 'ignore').rpartition(
+                ')')[2].split(' ')[20]
+
+    return float(starttime) / SC_CLK_TCK
+
+
+def pid_to_nssid(pid):
+    """ handle FNF error!
+    """
+    try:
+        nssid = rline1('/proc/' + pid + '/stat').rpartition(')')[
+            2].split(' ')[4]
+
+    except UnicodeDecodeError:
+        with open('/proc/' + pid + '/stat', 'rb') as f:
+            nssid = f.read().decode('utf-8', 'ignore').rpartition(
+                ')')[2].split(' ')[4]
+
+    return nssid
+
+
+def get_victim_id(pid):
+    """victim_id is starttime + pid"""
+    try:
+        return rline1('/proc/' + pid + '/stat').rpartition(
+            ')')[2].split(' ')[20] + '_pid' + pid
+    except (FileNotFoundError, ProcessLookupError):
+        return ''
+
+
+def pid_to_state(pid):
+    """
+    """
+    try:
+        with open('/proc/' + pid + '/stat', 'rb') as f:
+            return f.read(40).decode('utf-8', 'ignore').rpartition(')')[2][1]
+    except (FileNotFoundError, ProcessLookupError):
+        return ''
+    except IndexError:
+        with open('/proc/' + pid + '/stat', 'rb') as f:
+            return f.read().decode('utf-8', 'ignore').rpartition(')')[2][1]
+
+
+def pid_to_name(pid):
+    """
+    """
+    try:
+        with open('/proc/{}/comm'.format(pid), 'rb', buffering=0) as f:
+            return f.read().decode('utf-8', 'ignore')[:-1]
+    except (FileNotFoundError, ProcessLookupError):
+        return ''
+
+
+def pid_to_ppid(pid):
+    """
+    """
+    try:
+        with open('/proc/' + pid + '/status') as f:
+            for n, line in enumerate(f):
+                if n is ppid_index:
+                    return line.split('\t')[1].strip()
+    except (FileNotFoundError, ProcessLookupError):
+        return ''
+    except UnicodeDecodeError:
+        with open('/proc/' + pid + '/status', 'rb') as f:
+            f_list = f.read().decode('utf-8', 'ignore').split('\n')
+            for i in range(len(f_list)):
+                if i is ppid_index:
+                    return f_list[i].split('\t')[1]
+
+
+def pid_to_ancestry(pid, max_victim_ancestry_depth=1):
+    """
+    """
+    if max_victim_ancestry_depth == 1:
+        ppid = pid_to_ppid(pid)
+        pname = pid_to_name(ppid)
+        return '\n  PPID:      {} ({})'.format(ppid, pname)
+    if max_victim_ancestry_depth == 0:
+        return ''
+    anc_list = []
+    for i in range(max_victim_ancestry_depth):
+        ppid = pid_to_ppid(pid)
+        pname = pid_to_name(ppid)
+        anc_list.append((ppid, pname))
+        if ppid == '1':
+            break
+        pid = ppid
+    a = ''
+    for i in anc_list:
+        a = a + ' <= PID {} ({})'.format(i[0], i[1])
+    return '\n  ancestry:  ' + a[4:]
+
+
+def pid_to_cmdline(pid):
+    """
+    Get process cmdline by pid.
+
+    pid: str pid of required process
+    returns string cmdline
+    """
+    try:
+        with open('/proc/' + pid + '/cmdline', 'rb') as f:
+            return f.read().decode('utf-8', 'ignore').replace(
+                '\x00', ' ').rstrip()
+    except (FileNotFoundError, ProcessLookupError):
+        return ''
+
+
+def pid_to_environ(pid):
+    """
+    Get process environ by pid.
+
+    pid: str pid of required process
+    returns string environ
+    """
+    try:
+        with open('/proc/' + pid + '/environ', 'rb') as f:
+            return f.read().decode('utf-8', 'ignore').replace(
+                '\x00', ' ').rstrip()
+    except (FileNotFoundError, ProcessLookupError):
+        return ''
+
+
+def pid_to_realpath(pid):
+    """
+    """
+    try:
+        return os.path.realpath('/proc/{}/exe'.format(pid))
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        return ''
+
+
+def pid_to_cwd(pid):
+    """
+    """
+    try:
+        return os.path.realpath('/proc/{}/cwd'.format(pid))
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        return ''
+
+
+def pid_to_uid(pid):
+    """return euid"""
+    try:
+        with open('/proc/{}/status'.format(pid), 'rb', buffering=0) as f:
+            f_list = f.read().decode('utf-8', 'ignore').split('\n')
+            return f_list[uid_index].split('\t')[2]
+    except (FileNotFoundError, ProcessLookupError):
+        return ''
+
+
+def pid_to_badness(pid, oom_score):
+    """Find and modify badness (if it needs)."""
+
+    oom_score_adj = None
+
+    try:
+
+        if oom_score is None:
+
+            oom_score = pid_to_oom_score(pid)
+
+        if oom_score == 0:
+            return oom_score, oom_score
+
+        badness = oom_score
+
+        if ignore_positive_oom_score_adj:
+            oom_score_adj = pid_to_oom_score_adj(pid)
+            if oom_score_adj > 0:
+                badness = badness - oom_score_adj
+
+        if regex_matching:
+            name = pid_to_name(pid)
+            for re_tup in badness_adj_re_name_list:
+                if search(re_tup[1], name) is not None:
+                    badness_adj = int(re_tup[0])
+                    if badness_adj <= 0:
+                        badness += badness_adj
+                    else:
+                        if oom_score_adj is None:
+                            oom_score_adj = pid_to_oom_score_adj(pid)
+                        if oom_score_adj >= 0:
+                            badness += badness_adj
+
+        if re_match_cgroup_v1:
+            cgroup_v1 = pid_to_cgroup_v1(pid)
+            for re_tup in badness_adj_re_cgroup_v1_list:
+                if search(re_tup[1], cgroup_v1) is not None:
+                    badness_adj = int(re_tup[0])
+                    if badness_adj <= 0:
+                        badness += badness_adj
+                    else:
+                        if oom_score_adj is None:
+                            oom_score_adj = pid_to_oom_score_adj(pid)
+                        if oom_score_adj >= 0:
+                            badness += badness_adj
+
+        if re_match_cgroup_v2:
+            cgroup_v2 = pid_to_cgroup_v2(pid)
+            for re_tup in badness_adj_re_cgroup_v2_list:
+                if search(re_tup[1], cgroup_v2) is not None:
+                    badness_adj = int(re_tup[0])
+                    if badness_adj <= 0:
+                        badness += badness_adj
+                    else:
+                        if oom_score_adj is None:
+                            oom_score_adj = pid_to_oom_score_adj(pid)
+                        if oom_score_adj >= 0:
+                            badness += badness_adj
+
+        if re_match_realpath:
+            realpath = pid_to_realpath(pid)
+            for re_tup in badness_adj_re_realpath_list:
+                if search(re_tup[1], realpath) is not None:
+                    badness_adj = int(re_tup[0])
+                    if badness_adj <= 0:
+                        badness += badness_adj
+                    else:
+                        if oom_score_adj is None:
+                            oom_score_adj = pid_to_oom_score_adj(pid)
+                        if oom_score_adj >= 0:
+                            badness += badness_adj
+
+        if re_match_cwd:
+            cwd = pid_to_cwd(pid)
+            for re_tup in badness_adj_re_cwd_list:
+                if search(re_tup[1], cwd) is not None:
+                    badness_adj = int(re_tup[0])
+                    if badness_adj <= 0:
+                        badness += badness_adj
+                    else:
+                        if oom_score_adj is None:
+                            oom_score_adj = pid_to_oom_score_adj(pid)
+                        if oom_score_adj >= 0:
+                            badness += badness_adj
+
+        if re_match_cmdline:
+            cmdline = pid_to_cmdline(pid)
+            for re_tup in badness_adj_re_cmdline_list:
+                if search(re_tup[1], cmdline) is not None:
+                    badness_adj = int(re_tup[0])
+                    if badness_adj <= 0:
+                        badness += badness_adj
+                    else:
+                        if oom_score_adj is None:
+                            oom_score_adj = pid_to_oom_score_adj(pid)
+                        if oom_score_adj >= 0:
+                            badness += badness_adj
+
+        if re_match_environ:
+            environ = pid_to_environ(pid)
+            for re_tup in badness_adj_re_environ_list:
+                if search(re_tup[1], environ) is not None:
+                    badness_adj = int(re_tup[0])
+                    if badness_adj <= 0:
+                        badness += badness_adj
+                    else:
+                        if oom_score_adj is None:
+                            oom_score_adj = pid_to_oom_score_adj(pid)
+                        if oom_score_adj >= 0:
+                            badness += badness_adj
+
+        if re_match_uid:
+            uid = pid_to_uid(pid)
+            for re_tup in badness_adj_re_uid_list:
+                if search(re_tup[1], uid) is not None:
+                    badness_adj = int(re_tup[0])
+                    if badness_adj <= 0:
+                        badness += badness_adj
+                    else:
+                        if oom_score_adj is None:
+                            oom_score_adj = pid_to_oom_score_adj(pid)
+                        if oom_score_adj >= 0:
+                            badness += badness_adj
+
+        if badness < 0:
+            badness = 0
+
+        return badness, oom_score
+
+    except (FileNotFoundError, ProcessLookupError):
+        return None, None
+
+
+def pid_to_status(pid):
+    """
+    """
+    try:
+
+        with open('/proc/{}/status'.format(pid), 'rb', buffering=0) as f:
+            f_list = f.read().decode('utf-8', 'ignore').split('\n')
+
+            for i in range(len(f_list)):
+
+                if i == 0:
+                    name = f_list[i].split('\t')[1]
+
+                if i is state_index:
+                    state = f_list[i].split('\t')[1][0]
+
+                if i is ppid_index:
+                    ppid = f_list[i].split('\t')[1]
+
+                if i is uid_index:
+                    uid = f_list[i].split('\t')[2]
+
+                if i is vm_size_index:
+                    vm_size = kib_to_mib(
+                        int(f_list[i].split('\t')[1][:-3]))
+
+                if i is vm_rss_index:
+                    vm_rss = kib_to_mib(int(f_list[i].split('\t')[1][:-3]))
+
+                if i is vm_swap_index:
+                    vm_swap = kib_to_mib(int(f_list[i].split('\t')[1][:-3]))
+
+        return name, state, ppid, uid, vm_size, vm_rss, vm_swap
+
+    except (FileNotFoundError, ProcessLookupError, ValueError):
+        return None
+
+
+def uptime():
+    """
+    """
+    return float(rline1('/proc/uptime').split(' ')[0])
+
+
+def errprint(*text):
+    """
+    """
+    print(*text, file=stderr, flush=True)
+    try:
+        if separate_log:
+            logging.info(*msg)
+    except NameError:
+        pass
+
+
+def mlockall():
+    """
+    """
+    MCL_CURRENT = 1
+    MCL_FUTURE = 2
+    MCL_ONFAULT = 4
+    libc = CDLL(None, use_errno=True)
+    result = libc.mlockall(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)
+    if result != 0:
+        result = libc.mlockall(MCL_CURRENT | MCL_FUTURE)
+        if result != 0:
+            log('WARNING: cannot lock process memory: [Errno {}]'.format(
+                result))
+
+
+def update_stat_dict(key):
+    """
+    """
+    if key is not None:
+        if key not in stat_dict:
+            stat_dict.update({key: 1})
+        else:
+            new_value = stat_dict[key] + 1
+            stat_dict.update({key: new_value})
+
+
+def print_stat_dict():
+    """
+    """
+    if print_statistics:
+        lsd = len(stat_dict)
+        if lsd == 0:
+            log('No corrective actions applied in the last {}'.format(
+                format_time(monotonic() - start_time)))
+        else:
+            stats_msg = 'What happened in the last {}:'.format(
+                format_time(monotonic() - start_time))
+            for i in stat_dict:
+                stats_msg += '\n  {}: {}'.format(i, stat_dict[i])
+            log(stats_msg)
+
+
+def find_psi_metrics_value(psi_path, psi_metrics):
+    """
+    """
+    foooo = read_path(psi_path)
+
+    if foooo is None:
+        return None
+
+    try:
+
+        if psi_metrics == 'some_avg10':
+            return float(foooo.split('\n')[0].split(' ')[1].split('=')[1])
+        if psi_metrics == 'some_avg60':
+            return float(foooo.split('\n')[0].split(' ')[2].split('=')[1])
+        if psi_metrics == 'some_avg300':
+            return float(foooo.split('\n')[0].split(' ')[3].split('=')[1])
+        if psi_metrics == 'full_avg10':
+            return float(foooo.split('\n')[1].split(' ')[1].split('=')[1])
+        if psi_metrics == 'full_avg60':
+            return float(foooo.split('\n')[1].split(' ')[2].split('=')[1])
+        if psi_metrics == 'full_avg300':
+            return float(foooo.split('\n')[1].split(' ')[3].split('=')[1])
+
+    except Exception as e:
+        if debug_psi:
+            log('Invalid psi_path: {}'.format(e))
+        return None
+
+
+def check_mem_and_swap():
+    """
+    """
+    fd['mi'].seek(0)
+
+    m_list = fd['mi'].read().decode().split(' kB\n')
+
+    ma = int(m_list[mem_available_index].split(':')[1])
+    st = int(m_list[swap_total_index].split(':')[1])
+    sf = int(m_list[swap_free_index].split(':')[1])
+
+    if ZFS:
+        ma += zfs_arc_available()
+
+    return ma, st, sf
+
+
+def meminfo():
+    """
+    """
+    fd['mi'].seek(0)
+    m_list = fd['mi'].read().decode().split(' kB\n')
+
+    mem_available = int(m_list[mem_available_index].split(':')[1])
+    mem_free = int(m_list[mem_free_index].split(':')[1])
+    swap_total = int(m_list[swap_total_index].split(':')[1])
+    swap_free = int(m_list[swap_free_index].split(':')[1])
+    buffers = int(m_list[buffers_index].split(':')[1])
+    cached = int(m_list[cached_index].split(':')[1])
+    sreclaimable = int(m_list[sreclaimable_index].split(':')[1])
+    shmem = int(m_list[shmem_info_index].split(':')[1])
+
+    md = dict()
+
+    md['total'] = mem_total
+    md['used'] = mem_total - mem_free - buffers - cached - sreclaimable
+    md['free'] = mem_free
+    md['available'] = mem_available
+
+    if ZFS:
+        z = zfs_arc_available()
+        mem_available += z
+
+    md['shared'] = shmem
+    md['buffers'] = buffers
+    md['cache'] = cached + sreclaimable
+    md['swap_total'] = swap_total
+    md['swap_used'] = swap_total - swap_free
+    md['swap_free'] = swap_free
+
+    return md
+
+
+def check_zram():
+    """Find MemUsedZram (mem_used_total)."""
+    if os.path.exists('/sys/block/zram0/mem_limit'):
+        summa = 0
+        if os.path.exists('/sys/block/zram0/mm_stat'):
+            for dev in os.listdir('/sys/block'):
+                try:
+                    with open('/sys/block/{}/mm_stat'.format(
+                            dev), 'rb', buffering=0) as f:
+                        summa += int(f.read().decode().split()[2])
+                except FileNotFoundError:
+                    continue
+            return summa / 1024
+        else:
+            for dev in os.listdir('/sys/block'):
+                try:
+                    with open('/sys/block/{}/mem_used_total'.format(
+                            dev), 'rb', buffering=0) as f:
+                        summa += int(f.read())
+                except FileNotFoundError:
+                    continue
+            return summa / 1024
+    else:
+        return 0
+
+
+def format_time(t):
+    """
+    """
+    total_s = int(t)
+
+    if total_s < 60:
+        return '{}s'.format(round(t, 1))
+
+    if total_s < 3600:
+        total_m = total_s // 60
+        mod_s = total_s % 60
+        return '{}min {}s'.format(total_m, mod_s)
+
+    if total_s < 86400:
+        total_m = total_s // 60
+        mod_s = total_s % 60
+        total_h = total_m // 60
+        mod_m = total_m % 60
+        return '{}h {}min {}s'.format(total_h, mod_m, mod_s)
+
+    total_m = total_s // 60
+    mod_s = total_s % 60
+    total_h = total_m // 60
+    mod_m = total_m % 60
+    total_d = total_h // 24
+    mod_h = total_h % 24
+    return '{}d {}h {}min {}s'.format(total_d, mod_h, mod_m, mod_s)
+
+
+def string_to_float_convert_test(string):
+    """Try to interprete string values as floats."""
+    try:
+        return float(string)
+    except ValueError:
+        return None
+
+
+def string_to_int_convert_test(string):
+    """Try to interpret string values as integers."""
+    try:
+        return int(string)
+    except ValueError:
+        return None
+
+
+def conf_parse_string(param):
+    """
+    Get string parameters from the config dict.
+
+    param: config_dict key
+    returns config_dict[param].strip()
+    """
+    if param in config_dict:
+        return config_dict[param].strip()
+    else:
+        missing_config_key(param)
+
+
+def conf_parse_bool(param):
+    """
+    Get bool parameters from the config_dict.
+
+    param: config_dict key
+    returns bool
+    """
+    if param in config_dict:
+        param_str = config_dict[param]
+        if param_str == 'True':
+            return True
+        elif param_str == 'False':
+            return False
+        else:
+            invalid_config_key_value(param)
+    else:
+        missing_config_key(param)
+
+
+def rline1(path):
+    """Read 1st line from the path."""
+    try:
+        with open(path) as f:
+            for line in f:
+                return line.rstrip()
+    except UnicodeDecodeError:
+        with open(path, 'rb') as f:
+            return f.read(999).decode(
+                'utf-8', 'ignore').split('\n')[0]  # use partition()!
+
+
+def kib_to_mib(num):
+    """Convert KiB values to MiB values."""
+    return round(num / 1024.0)
+
+
+def percent(num):
+    """Interprete num as percentage."""
+    return round(num * 100, 1)
+
+
+def just_percent_mem(num):
+    """Convert num to percent and justify."""
+    return str(round(num * 100, 1)).rjust(4, ' ')
+
+
+def just_percent_swap(num):
+    """
+    """
+    return str(round(num * 100, 1)).rjust(5, ' ')
+
+
+def human(num, lenth):
+    """Convert KiB values to MiB values with right alignment."""
+    return str(round(num / 1024)).rjust(lenth, ' ')
+
+
+def is_alive(pid):
+    """
+    """
+    try:
+        with open('/proc/{}/statm'.format(pid), 'rb', buffering=0) as f:
+            rss = f.read().decode().split(' ')[1]
+            if rss != '0':
+                return True
+    except (FileNotFoundError, ProcessLookupError, NotADirectoryError,
+            PermissionError):
+        return False
+
+
+def alive_pid_list():
+    """
+    """
+    pid_list = []
+    for pid in os.listdir('/proc'):
+
+        if not pid[0].isdecimal():
+            continue
+
+        if is_alive(pid):
+            pid_list.append(pid)
+
+    pid_list.remove(self_pid)
+
+    if '1' in pid_list:
+        pid_list.remove('1')
+
+    return pid_list
+
+
+def pid_to_oom_score(pid):
+    try:
+        with open('/proc/{}/oom_score'.format(pid), 'rb', buffering=0) as f:
+            return int(f.read())
+    except (FileNotFoundError, ProcessLookupError, NotADirectoryError):
+        return 0
+
+
+def pid_to_oom_score_adj(pid):
+    try:
+        with open(
+                '/proc/{}/oom_score_adj'.format(pid), 'rb', buffering=0) as f:
+            return int(f.read())
+    except (FileNotFoundError, ProcessLookupError, NotADirectoryError):
+        return 0
+
+
+def badness_pid_list():
+    """
+    """
+    pid_b_list = []
+    for pid in os.listdir('/proc'):
+        o = pid_to_oom_score(pid)
+        if o >= 1:
+            if not pid[0].isdecimal():
+                continue
+            if pid == self_pid or pid == '1':
+                continue
+            b = pid_to_badness(pid, o)[0]
+            # log('PID: {}, oom_score: {}, badness: {}, Name: {}'.format(
+            #     pid, o, b, pid_to_name(pid)))
+            pid_b_list.append((pid, b))
+    return pid_b_list
+
+
+def fast_find_victim():
+    """
+    """
+    ft1 = monotonic()
+    pid_badness_list = badness_pid_list()
+    real_proc_num = len(pid_badness_list)
+
+    if real_proc_num == 0:
+        log('Found {} tasks with non-zero oom_score (except init and self) '
+            'in {}ms'.format(real_proc_num, round((monotonic() - ft1) * 1000)))
+        return None
+
+    log('Found {} tasks with non-zero oom_score (except init and self) '
+        'in {}ms'.format(real_proc_num, round((monotonic() - ft1) * 1000)))
+
+    # Make list of (pid, badness) tuples, sorted by 'badness' values
+    pid_badness_list_sorted = sorted(
+        pid_badness_list,
+        key=itemgetter(1),
+        reverse=True)
+
+    m0 = monotonic()
+    top_n = 15
+    if real_proc_num < top_n:
+        top_n = real_proc_num
+    log('TOP-{} tasks by badness:'.format(top_n))
+    log('  Name                PID badness')
+    log('  --------------- ------- -------')
+    for pid_badness in pid_badness_list_sorted[0:top_n]:
+        p = pid_badness[0]
+        b = str(pid_badness[1])
+        n = pid_to_name(p)
+        log('  {} {} {}'.format(n.ljust(15), p.rjust(7), b.rjust(7)))
+
+    pid = pid_badness_list_sorted[0][0]
+    victim_id = get_victim_id(pid)
+
+    # Get maximum 'badness' value
+    victim_badness = pid_badness_list_sorted[0][1]
+    victim_name = pid_to_name(pid)
+
+    log('TOP printed in {}ms; process with highest badness:\n  PID: {}, na'
+        'me: {}, badness: {}'.format(
+            round((monotonic() - m0) * 1000),
+            pid,
+            victim_name,
+            victim_badness
+        ))
+
+    return pid, victim_badness, victim_name, victim_id
+
+
+def find_victim(_print_proc_table):
+    """
+    Find the process with highest badness and its badness adjustment
+    Return pid and badness
+    """
+
+    if not _print_proc_table:
+        return fast_find_victim()
+
+    ft1 = monotonic()
+
+    pid_list = alive_pid_list()
+
+    pid_badness_list = []
+
+    if _print_proc_table:
+
+        if extra_table_info == 'None':
+            extra_table_title = ''
+
+        elif extra_table_info == 'cgroup_v1':
+            extra_table_title = 'CGroup_v1'
+
+        elif extra_table_info == 'cgroup_v2':
+            extra_table_title = 'CGroup_v2'
+
+        elif extra_table_info == 'cmdline':
+            extra_table_title = 'cmdline'
+
+        elif extra_table_info == 'environ':
+            extra_table_title = 'environ'
+
+        elif extra_table_info == 'realpath':
+            extra_table_title = 'realpath'
+
+        elif extra_table_info == 'cwd':
+            extra_table_title = 'cwd'
+
+        else:
+            extra_table_title = ''
+
+        hr = '#' * 107
+
+        log('Tasks state (memory values in mebibytes):')
+        log(hr)
+        log('#    PID     PPID  badness  oom_score  oom_score_adj        e'
+            'UID  S  VmSize  VmRSS  VmSwap  Name             {}'.format(
+                extra_table_title))
+        log('#-------  -------  -------  ---------  -------------  -------'
+            '---  -  ------  -----  ------  ---------------')
+
+    for pid in pid_list:
+
+        badness = pid_to_badness(pid, None)[0]
+
+        if badness is None:
+            continue
+
+        if _print_proc_table:
+
+            try:
+                oom_score = pid_to_oom_score(pid)
+                oom_score_adj = pid_to_oom_score_adj(pid)
+            except FileNotFoundError:
+                continue
+
+            if pid_to_status(pid) is None:
+                continue
+            else:
+                (name, state, ppid, uid, vm_size, vm_rss,
+                 vm_swap) = pid_to_status(pid)
+
+            if extra_table_info == 'None':
+                extra_table_line = ''
+
+            elif extra_table_info == 'cgroup_v1':
+                extra_table_line = pid_to_cgroup_v1(pid)
+
+            elif extra_table_info == 'cgroup_v2':
+                extra_table_line = pid_to_cgroup_v2(pid)
+
+            elif extra_table_info == 'cmdline':
+                extra_table_line = pid_to_cmdline(pid)
+
+            elif extra_table_info == 'environ':
+                extra_table_line = pid_to_environ(pid)
+
+            elif extra_table_info == 'realpath':
+                extra_table_line = pid_to_realpath(pid)
+
+            elif extra_table_info == 'cwd':
+                extra_table_line = pid_to_cwd(pid)
+
+            else:
+                extra_table_line = ''
+
+            log('#{}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {}'.format(
+                pid.rjust(7),
+                ppid.rjust(7),
+                str(badness).rjust(7),
+                str(oom_score).rjust(9),
+                str(oom_score_adj).rjust(13),
+                uid.rjust(10),
+                state,
+                str(vm_size).rjust(6),
+                str(vm_rss).rjust(5),
+                str(vm_swap).rjust(6),
+                name.ljust(15),
+                extra_table_line))
+
+        pid_badness_list.append((pid, badness))
+
+    real_proc_num = len(pid_badness_list)
+
+    # Make list of (pid, badness) tuples, sorted by 'badness' values
+    # print(pid_badness_list)
+    pid_tuple_list = sorted(
+        pid_badness_list,
+        key=itemgetter(1),
+        reverse=True
+    )[0]
+
+    pid = pid_tuple_list[0]
+    victim_id = get_victim_id(pid)
+
+    # Get maximum 'badness' value
+    victim_badness = pid_tuple_list[1]
+    victim_name = pid_to_name(pid)
+
+    if _print_proc_table:
+        log(hr)
+
+    log('Found {} tasks with non-zero VmRSS (except init and self)'.format(
+        real_proc_num))
+
+    log('Process with highest badness (found in {}ms):\n  PID: {}, Na'
+        'me: {}, badness: {}'.format(
+            round((monotonic() - ft1) * 1000),
+            pid,
+            victim_name,
+            victim_badness))
+
+    return pid, victim_badness, victim_name, victim_id
+
+
+def find_victim_info(pid, victim_badness, name):
+    """
+    """
+    status0 = monotonic()
+
+    try:
+
+        with open('/proc/{}/status'.format(pid), 'rb', buffering=0) as f:
+            f_list = f.read().decode('utf-8', 'ignore').split('\n')
+
+            for i in range(len(f_list)):
+
+                if i is state_index:
+                    state = f_list[i].split('\t')[1].rstrip()
+
+                if i is uid_index:
+                    uid = f_list[i].split('\t')[2]
+
+                if i is vm_size_index:
+                    vm_size = kib_to_mib(
+                        int(f_list[i].split('\t')[1][:-3]))
+
+                if i is vm_rss_index:
+                    vm_rss = kib_to_mib(int(f_list[i].split('\t')[1][:-3]))
+
+                if detailed_rss:
+
+                    if i is anon_index:
+                        anon_rss = kib_to_mib(
+                            int(f_list[i].split('\t')[1][:-3]))
+
+                    if i is file_index:
+                        file_rss = kib_to_mib(
+                            int(f_list[i].split('\t')[1][:-3]))
+
+                    if i is shmem_index:
+                        shmem_rss = kib_to_mib(
+                            int(f_list[i].split('\t')[1][:-3]))
+
+                if i is vm_swap_index:
+                    vm_swap = kib_to_mib(
+                        int(f_list[i].split('\t')[1][:-3]))
+
+        if print_victim_cmdline:
+            cmdline = pid_to_cmdline(pid)
+        oom_score = pid_to_oom_score(pid)
+        oom_score_adj = pid_to_oom_score_adj(pid)
+
+    except (IndexError, ValueError):
+        x = 'Selected process died before corrective action'
+        log(x)
+        update_stat_dict(x)
+        print_stat_dict()
+        return None
+
+    try:
+        realpath = pid_to_realpath(pid)
+        cwd = pid_to_cwd(pid)
+        nssid = pid_to_nssid(pid)
+        victim_lifetime = format_time(uptime() - pid_to_starttime(pid))
+        victim_cgroup_v1 = pid_to_cgroup_v1(pid)
+        victim_cgroup_v2 = pid_to_cgroup_v2(pid)
+
+    except FileNotFoundError:
+        x = 'Selected process died before corrective action'
+        log(x)
+        update_stat_dict(x)
+        print_stat_dict()
+        return None
+
+    ancestry = pid_to_ancestry(pid, max_victim_ancestry_depth)
+
+    if not print_victim_cmdline:
+        cmdline = ''
+        c1 = ''
+    else:
+        c1 = '\n  cmdline:   '
+
+    if detailed_rss:
+        detailed_rss_info = ' (Anon: {}, File: {}, Shmem: {})'.format(
+            anon_rss,
+            file_rss,
+            shmem_rss)
+    else:
+        detailed_rss_info = ''
+
+    victim_info = 'Victim status (found in {}ms):' \
+        '\n  PID:       {}, name: {}, state: {}, EUID: {}, ' \
+        'SID: {} ({}), lifetime: {}' \
+        '\n  badness:   {}, oom_score:  {}, oom_score_adj:  {}' \
+        '\n  Vm, MiB:   Size: {}, RSS: {}{}, Swap: {}' \
+        '\n  cgroup_v1: {}' \
+        '\n  cgroup_v2: {}' \
+        '{}{}{}' \
+        '\n  exe realpath: {}' \
+        '\n  cwd realpath: {}'.format(
+
+            round((monotonic() - status0) * 1000),
+            pid,
+            name,
+            state,
+            uid,
+            nssid, pid_to_name(nssid),
+            victim_lifetime,
+            victim_badness,
+            oom_score,
+            oom_score_adj,
+            vm_size,
+            vm_rss,
+            detailed_rss_info,
+            vm_swap,
+            victim_cgroup_v1,
+            victim_cgroup_v2,
+            ancestry,
+            c1, cmdline,
+            realpath,
+            cwd)
+
+    return victim_info
+
+
+def check_mem_swap_ex():
+    """
+    Check: is mem and swap threshold exceeded?
+    Return: None, (SIGTERM, meminfo), (SIGKILL, meminfo)
+    """
+
+    mem_available, swap_total, swap_free = check_mem_and_swap()
+
+    # if hard_threshold_min_swap is set in percent
+    if swap_kill_is_percent:
+        hard_threshold_min_swap_kb = swap_total * \
+            hard_threshold_min_swap_percent / 100.0
+    else:
+        hard_threshold_min_swap_kb = swap_kb_dict['hard_threshold_min_swap_kb']
+
+    if swap_term_is_percent:
+        soft_threshold_min_swap_kb = swap_total * \
+            soft_threshold_min_swap_percent / 100.0
+    else:
+        soft_threshold_min_swap_kb = swap_kb_dict['soft_threshold_min_swap_kb']
+
+    if swap_warn_is_percent:
+        warning_threshold_min_swap_kb = swap_total * \
+            warning_threshold_min_swap_percent / 100.0
+    else:
+        warning_threshold_min_swap_kb = swap_kb_dict[
+            'warning_threshold_min_swap_kb']
+
+    if swap_total > hard_threshold_min_swap_kb:
+        swap_sigkill_pc = percent(
+            hard_threshold_min_swap_kb / (swap_total + 0.1))
+    else:
+        swap_sigkill_pc = '-'
+
+    if swap_total > soft_threshold_min_swap_kb:
+        swap_sigterm_pc = percent(
+            soft_threshold_min_swap_kb / (swap_total + 0.1))
+    else:
+        swap_sigterm_pc = '-'
+
+    if (mem_available <= hard_threshold_min_mem_kb and
+            swap_free <= hard_threshold_min_swap_kb):
+
+        mem_info = 'Memory status that requires corrective actions:\n  Mem' \
+            'Available [{} MiB, {} %] <= hard_threshold_min_mem [{} MiB' \
+            ', {} %]\n  SwapFree [{} MiB, {} %] <= hard_threshold_m' \
+            'in_swap [{} MiB, {} %]'.format(
+
+                kib_to_mib(mem_available),
+                percent(mem_available / mem_total),
+                kib_to_mib(hard_threshold_min_mem_kb),
+                round(hard_threshold_min_mem_percent, 1),
+                kib_to_mib(swap_free),
+                percent(swap_free / (swap_total + 0.1)),
+                kib_to_mib(hard_threshold_min_swap_kb),
+                swap_sigkill_pc)
+
+        return (SIGKILL, mem_info, mem_available, hard_threshold_min_swap_kb,
+                soft_threshold_min_swap_kb, swap_free, swap_total)
+
+    if (mem_available <= soft_threshold_min_mem_kb and
+            swap_free <= soft_threshold_min_swap_kb):
+
+        mem_info = 'Memory status that requires corrective actions:\n  M' \
+            'emAvailable [{} MiB, {} %] <= soft_threshold_min_mem [{} MiB,' \
+            ' {} %]\n  SwapFree [{} MiB, {} %] <= soft_threshold_min_swa' \
+            'p [{} MiB, {} %]'.format(
+
+                kib_to_mib(mem_available),
+                percent(mem_available / mem_total),
+                kib_to_mib(soft_threshold_min_mem_kb),
+                round(soft_threshold_min_mem_percent, 1),
+                kib_to_mib(swap_free),
+                percent(swap_free / (swap_total + 0.1)),
+                kib_to_mib(soft_threshold_min_swap_kb),
+                swap_sigterm_pc)
+
+        return (SIGTERM, mem_info, mem_available, hard_threshold_min_swap_kb,
+                soft_threshold_min_swap_kb, swap_free, swap_total)
+
+    if low_memory_warnings_enabled:
+
+        if (mem_available <= warning_threshold_min_mem_kb and swap_free <=
+                warning_threshold_min_swap_kb + 0.1):
+            return ('WARN', None, mem_available, hard_threshold_min_swap_kb,
+                    soft_threshold_min_swap_kb, swap_free, swap_total)
+
+    return (None, None, mem_available, hard_threshold_min_swap_kb,
+            soft_threshold_min_swap_kb, swap_free, swap_total)
+
+
+def check_zram_ex():
+    """
+    """
+    mem_used_zram = check_zram()
+
+    ma_hard_threshold_exceded = bool(
+        mem_available <= hard_threshold_min_mem_kb)
+
+    ma_soft_threshold_exceded = bool(
+        mem_available <= soft_threshold_min_mem_kb)
+
+    ma_warning_threshold_exceded = bool(
+        mem_available <= warning_threshold_min_mem_kb)
+
+    if (mem_used_zram >= hard_threshold_max_zram_kb and
+            ma_hard_threshold_exceded):
+
+        mem_info = 'Memory status that requires corrective actions:\n  MemAv' \
+                   'ailable [{} MiB, {} %] <= hard_threshold_min_mem [{} MiB' \
+                   ', {} %]\n  MemUsedZram [{} MiB, {} %] >= hard_threshold_' \
+                   'max_zram [{} MiB, {} %]'.format(
+                       kib_to_mib(mem_available),
+                       percent(mem_available / mem_total),
+                       kib_to_mib(hard_threshold_min_mem_kb),
+                       round(hard_threshold_min_mem_percent, 1),
+                       kib_to_mib(mem_used_zram),
+                       percent(mem_used_zram / mem_total),
+                       kib_to_mib(hard_threshold_max_zram_kb),
+                       percent(hard_threshold_max_zram_kb / mem_total))
+
+        return SIGKILL, mem_info, mem_used_zram
+
+    if (mem_used_zram >= soft_threshold_max_zram_kb and
+            ma_soft_threshold_exceded):
+
+        mem_info = 'Memory status that requires corrective actions:\n  MemA' \
+                   'vailable [{} MiB, {} %] <= soft_threshold_min_mem [{} M' \
+                   'iB, {} %]\n  MemUsedZram [{} MiB, {} %] >= soft_thresho' \
+                   'ld_max_zram [{} M, {} %]'.format(
+                       kib_to_mib(mem_available),
+                       percent(mem_available / mem_total),
+                       kib_to_mib(soft_threshold_min_mem_kb),
+                       round(soft_threshold_min_mem_percent, 1),
+                       kib_to_mib(mem_used_zram),
+                       percent(mem_used_zram / mem_total),
+                       kib_to_mib(soft_threshold_max_zram_kb),
+                       percent(soft_threshold_max_zram_kb / mem_total))
+
+        return SIGTERM, mem_info, mem_used_zram
+
+    if low_memory_warnings_enabled:
+        if (mem_used_zram >= warning_threshold_max_zram_kb and
+                ma_warning_threshold_exceded):
+            return 'WARN', None, mem_used_zram
+
+    return None, None, mem_used_zram
+
+
+def check_psi_ex(psi_kill_exceeded_timer, psi_term_exceeded_timer, x0,
+                 mem_available):
+    """
+    """
+    ma_hard_threshold_exceded = bool(
+        mem_available <= hard_threshold_min_mem_kb)
+
+    ma_soft_threshold_exceded = bool(
+        mem_available <= soft_threshold_min_mem_kb)
+
+    ma_warning_threshold_exceded = bool(
+        mem_available <= warning_threshold_min_mem_kb)
+
+    if not (ma_warning_threshold_exceded or ma_soft_threshold_exceded or
+            ma_hard_threshold_exceded) or swap_total == 0:
+
+        if debug_psi:
+            log('Do not measure the value of PSI, since none of the thresho'
+                'lds of available memory is exceeded')
+
+        return (None, None,
+                psi_kill_exceeded_timer,
+                psi_term_exceeded_timer, x0)
+
+    delta0 = monotonic() - x0
+    x0 = monotonic()
+
+    psi_avg_value = find_psi_metrics_value(psi_path, psi_metrics)
+
+    if debug_psi:
+
+        log('-------------------------------------------------------------'
+            '-----------')
+
+        log('PSI {} value in {}: {}'.format(
+            psi_metrics, psi_path, psi_avg_value))
+
+    if psi_avg_value is None:
+        return (None, None, -0.0001, -0.0001, x0)
+
+    psi_post_action_delay_timer = monotonic() - last_action_dict['t']
+
+    psi_post_action_delay_exceeded = bool(
+        psi_post_action_delay_timer >= psi_post_action_delay)
+
+    if psi_avg_value >= hard_threshold_max_psi:
+        sigkill_psi_exceeded = True
+        if ma_hard_threshold_exceded:
+            if psi_kill_exceeded_timer < 0:
+                psi_kill_exceeded_timer = 0
+            else:
+                psi_kill_exceeded_timer += delta0
+        else:
+            psi_kill_exceeded_timer = -0.0001
+    else:
+        sigkill_psi_exceeded = False
+        psi_kill_exceeded_timer = -0.0001
+
+    if debug_psi:
+
+        log('psi_post_action_delay_timer: {}, psi_post_action_delay_exceed'
+            'ed: {}'.format(
+                round(psi_post_action_delay_timer, 1),
+                psi_post_action_delay_exceeded))
+
+        log('mem_avail_hard_threshold_exceded: {}, hard_threshold_psi_exce'
+            'eded: {}, hard_psi_excess_duration: {}'.format(
+                ma_hard_threshold_exceded,
+                sigkill_psi_exceeded,
+                round(psi_kill_exceeded_timer, 1)))
+
+    if (sigkill_psi_exceeded and psi_kill_exceeded_timer >=
+            psi_excess_duration and psi_post_action_delay_exceeded and
+            ma_hard_threshold_exceded):
+
+        mem_info = 'Memory status that requires corrective actions:\n  MemAv' \
+                   'ailable [{} MiB, {} %] <= hard_threshold_min_mem [{} MiB' \
+                   ', {} %]\n  Current PSI metric value ({}) >= hard_thresho' \
+                   'ld_max_psi ({})\n  PSI metric value exceeded psi_excess_' \
+                   'duration ({}s) for {}s'.format(
+                       kib_to_mib(mem_available),
+                       percent(mem_available / mem_total),
+                       kib_to_mib(hard_threshold_min_mem_kb),
+                       round(hard_threshold_min_mem_percent, 1),
+                       psi_avg_value,
+                       hard_threshold_max_psi,
+                       psi_excess_duration,
+                       round(psi_kill_exceeded_timer, 1))
+
+        return (SIGKILL, mem_info, psi_kill_exceeded_timer,
+                psi_term_exceeded_timer, x0)
+
+    if psi_avg_value >= soft_threshold_max_psi:
+        sigterm_psi_exceeded = True
+        if ma_soft_threshold_exceded:
+            if psi_term_exceeded_timer < 0:
+                psi_term_exceeded_timer = 0
+            else:
+                psi_term_exceeded_timer += delta0
+        else:
+            psi_term_exceeded_timer = -0.0001
+    else:
+        sigterm_psi_exceeded = False
+        psi_term_exceeded_timer = -0.0001
+
+    if debug_psi:
+
+        log('mem_avail_soft_threshold_exceded: {}, soft_threshold_psi_exce'
+            'eded: {}, soft_psi_excess_duration: {}'.format(
+                ma_soft_threshold_exceded,
+                sigterm_psi_exceeded,
+                round(psi_term_exceeded_timer, 1)))
+
+    if (sigterm_psi_exceeded and psi_term_exceeded_timer >=
+            psi_excess_duration and psi_post_action_delay_exceeded and
+            ma_soft_threshold_exceded):
+
+        mem_info = 'Memory status that requires corrective actions:\n  MemA' \
+                   'vailable [{} MiB, {} %] <= soft_threshold_min_mem [{} M' \
+                   'iB, {} %]\n  Current PSI metric value ({}) >= soft_thre' \
+                   'shold_max_psi ({})\n  PSI metric value exceeded psi_exc' \
+                   'ess_duration ({}s) for {}s'.format(
+                       kib_to_mib(mem_available),
+                       percent(mem_available / mem_total),
+                       kib_to_mib(soft_threshold_min_mem_kb),
+                       round(soft_threshold_min_mem_percent, 1),
+                       psi_avg_value,
+                       soft_threshold_max_psi,
+                       psi_excess_duration,
+                       round(psi_term_exceeded_timer, 1))
+
+        return (SIGTERM, mem_info, psi_kill_exceeded_timer,
+                psi_term_exceeded_timer, x0)
+
+    if low_memory_warnings_enabled:
+
+        if (psi_avg_value >= warning_threshold_max_psi and
+                ma_warning_threshold_exceded):
+            return ('WARN', None, psi_kill_exceeded_timer,
+                    psi_term_exceeded_timer, x0)
+
+    return (None, None, psi_kill_exceeded_timer,
+            psi_term_exceeded_timer, x0)
+
+
+def is_victim_alive(victim_id):
+    """
+    We do not have a reliable sign of the end of the release of memory:
+    https://github.com/rfjakob/earlyoom/issues/128#issuecomment-507023717
+    """
+    _, pid = victim_id.split('_pid')
+    new_victim_id = get_victim_id(pid)
+    if victim_id != new_victim_id:
+        return 0
+
+    if is_alive(pid):
+        return 1
+
+    state = pid_to_state(pid)
+
+    if state == 'R':
+        return 2
+
+    if state == 'Z':
+        return 3
+
+    if state == 'X' or state == '':
+        return 0
+
+    return 0
+
+
+def log_meminfo():
+    """
+    """
+    mid = meminfo()
+    log('Memory info, MiB:')
+    log('  total={}, used={}, free={}, available={}, shared={}, buffers'
+        '={}, cache={},'.format(
+            round(mem_total / 1024),
+            round(mid['used'] / 1024),
+            round(mid['free'] / 1024),
+            round(mid['available'] / 1024),
+            round(mid['shared'] / 1024),
+            round(mid['buffers'] / 1024),
+            round(mid['cache'] / 1024)
+        ))
+    log('  swap_total={}, swap_used={}, swap_free={}'.format(
+        round(mid['swap_total'] / 1024),
+        round(mid['swap_used'] / 1024),
+        round(mid['swap_free'] / 1024)
+    ))
+    if PSI_KERNEL_OK:
+        mp = psi_file_mem_to_metrics('/proc/pressure/memory')
+        log('Memory pressure (system-wide):')
+        log('  some avg10={} avg60={} avg300={}'.format(
+            mp[0], mp[1], mp[2]
+        ))
+        log('  full avg10={} avg60={} avg300={}'.format(
+            mp[3], mp[4], mp[5]
+        ))
+
+
+def is_post_oom_delay_exceeded():
+    """
+    """
+    oom_t = oom_dict['t']
+
+    if oom_t is not None:
+
+        post_oom_t = monotonic() - oom_t
+
+        if post_oom_t < post_oom_delay:
+
+            log('Time since OOM: {}s; post OOM delay ({}s) is not exceed'
+                'ed'.format(round(post_oom_t, 3), post_oom_delay))
+
+            if debug_sleep:
+                log('Sleep {}s'.format(over_sleep))
+            sleep(over_sleep)
+
+            return False
+        else:
+            return True
+
+    else:
+        return True
+
+
+def implement_corrective_action(
+        threshold,
+        mem_info_list,
+        psi_kill_exceeded_timer,
+        psi_term_exceeded_timer,
+        x0,
+        psi_threshold,
+        zram_threshold,
+        zram_info,
+        psi_info):
+
+    log(separator_in)
+
+    debug_corrective_action = True
+
+    post_oom_delay_exceeded = is_post_oom_delay_exceeded()
+    if not post_oom_delay_exceeded:
+        log(separator_out)
+        return None
+
+    time0 = monotonic()
+
+    nu = []
+
+    for victim_id in v_dict:
+        iva = is_victim_alive(victim_id)
+        if iva == 0 or iva == 3:
+            nu.append(victim_id)
+
+    for i in nu:
+        if debug_corrective_action:
+            log('Remove {} from v_dict'.format(i))
+        v_dict.pop(i)
+
+    x = False
+    cache_list = []
+
+    for victim_id in v_dict:
+        tx = v_dict[victim_id]['time']
+        ddt = monotonic() - tx
+        if ddt < victim_cache_time:
+
+            if debug_corrective_action:
+                log('victim_cache_time is not exceeded for {} ({} <'
+                    ' {})'.format(victim_id, round(ddt, 3), victim_cache_time))
+            x = True
+            cache_list.append((victim_id, ddt))
+            break
+
+    if x:
+        e = sorted(cache_list, key=itemgetter(1), reverse=False)
+        cached_victim_id = e[0][0]
+
+    for i in mem_info_list:
+        log(i)
+
+    if x:
+        victim_id = cached_victim_id
+        pid = victim_id.partition('_pid')[2]
+        victim_badness = pid_to_badness(pid, None)[0]
+        name = v_dict[victim_id]['name']
+        log('New victim is cached victim {} ({})'.format(pid, name))
+    else:
+
+        s1 = set(os.listdir('/proc'))
+        fff = find_victim(print_proc_table)
+        # sleep(0.1)
+        s2 = set(os.listdir('/proc'))
+        dset = s1 - s2
+
+        if len(dset) > 0:
+            log('During the search for the victim, the next processes were'
+                ' died: {}'.format(dset))
+
+            sleep(over_sleep)
+
+            log(separator_out)
+
+            return None
+
+        if fff is None:
+
+            if debug_sleep:
+                log('Sleep {}s'.format(over_sleep))
+            sleep(over_sleep)
+
+            log(separator_out)
+
+            return None
+
+        pid, victim_badness, name, victim_id = fff
+
+    post_oom_delay_exceeded = is_post_oom_delay_exceeded()
+    if not post_oom_delay_exceeded:
+        log(separator_out)
+        return None
+
+    log('Recheck memory levels...')
+
+    (masf_threshold, masf_info, mem_available, _, _, swap_free, _
+     ) = check_mem_swap_ex()
+
+    if zram_checking_enabled:
+        zram_threshold, zram_info, _ = check_zram_ex()
+
+    if CHECK_PSI:
+        (psi_threshold, psi_info, psi_kill_exceeded_timer,
+         psi_term_exceeded_timer, x0) = check_psi_ex(
+             psi_kill_exceeded_timer, psi_term_exceeded_timer, x0,
+             mem_available)
+
+    if (masf_threshold is SIGKILL or zram_threshold is SIGKILL or
+            psi_threshold is SIGKILL):
+
+        new_threshold = SIGKILL
+        mem_info_list = []
+
+        if masf_threshold is SIGKILL or masf_threshold is SIGTERM:
+            mem_info_list.append(masf_info)
+
+        if zram_threshold is SIGKILL or zram_threshold is SIGTERM:
+            mem_info_list.append(zram_info)
+
+        if psi_threshold is SIGKILL or psi_threshold is SIGTERM:
+            mem_info_list.append(psi_info)
+
+    elif (masf_threshold is SIGTERM or zram_threshold is SIGTERM or
+          psi_threshold is SIGTERM):
+
+        new_threshold = SIGTERM
+        mem_info_list = []
+
+        if masf_threshold is SIGKILL or masf_threshold is SIGTERM:
+            mem_info_list.append(masf_info)
+
+        if zram_threshold is SIGKILL or zram_threshold is SIGTERM:
+            mem_info_list.append(zram_info)
+
+        if psi_threshold is SIGKILL or psi_threshold is SIGTERM:
+            mem_info_list.append(psi_info)
+
+    else:
+        log('Thresholds is not exceeded now')
+        log(separator_out)
+        return None
+
+    for i in mem_info_list:
+        log(i)
+
+    if new_threshold is None or new_threshold == 'WARN':
+        log('Thresholds is not exceeded now')
+        log(separator_out)
+        return None
+
+    threshold = new_threshold
+
+    vwd = None  # Victim Will Die
+
+    if threshold is SIGTERM:
+        if victim_id in v_dict:
+            dt = monotonic() - v_dict[victim_id]['time']
+            if dt > max_soft_exit_time:
+                log('max_soft_exit_time (value={}s) is exceeded for the victim'
+                    ', hard corrective action will be applied'.format(
+                        max_soft_exit_time))
+                threshold = SIGKILL
+            else:
+                log('max_soft_exit_time is not exceeded ('
+                    '{} < {}) for the victim'.format(round(
+                        dt, 1), max_soft_exit_time))
+
+                if debug_sleep:
+                    log('Sleep {}s'.format(over_sleep))
+                sleep(over_sleep)
+
+                log(separator_out)
+
+                return None
+
+    if victim_badness >= min_badness:
+
+        if print_victim_status:
+            victim_info = find_victim_info(pid, victim_badness, name)
+            if victim_info is not None:
+                log(victim_info)
+            else:
+                sleep(over_sleep)
+
+                log(separator_out)
+
+                return None
+
+        log_meminfo()
+
+        if (threshold is SIGKILL and post_kill_exe != '') or (
+                soft_actions and threshold is SIGTERM):
+
+            name = pid_to_name(pid)
+            cgroup_v1 = pid_to_cgroup_v1(pid)
+            cgroup_v2 = pid_to_cgroup_v2(pid)
+
+            if cgroup_v1 != '':
+                cgroup_v1_tail = cgroup_v1.rpartition('/')[2]
+                if cgroup_v1_tail.endswith('.service'):
+                    service = cgroup_v1_tail
+                else:
+                    service = ''
+            elif cgroup_v2 != '':
+                cgroup_v2_tail = cgroup_v2.rpartition('/')[2]
+                if cgroup_v2_tail.endswith('.service'):
+                    service = cgroup_v2_tail
+                else:
+                    service = ''
+            else:
+                service = ''
+
+        soft_match = False
+
+        if soft_actions and threshold is SIGTERM:
+
+            for i in soft_actions_list:
+                unit = i[0]
+                if unit == 'name':
+                    u = name
+                elif unit == 'cgroup_v1':
+                    u = cgroup_v1
+
+                else:
+                    u = cgroup_v2
+
+                regexp = i[1]
+                command = i[2]
+                if search(regexp, u) is not None:
+                    log("Regexp '{}' matches with {} '{}'".format(
+                        regexp, unit, u))
+                    soft_match = True
+                    break
+
+        start_action = monotonic()
+
+        post_oom_delay_exceeded = is_post_oom_delay_exceeded()
+        if not post_oom_delay_exceeded:
+            log(separator_out)
+            return None
+
+        if soft_match:
+
+            cmd = command.replace('$PID', pid).replace('$NAME', pid_to_name(
+                pid)).replace('$SERVICE', service)
+
+            preventing_oom_message = 'Implementing a corrective action:\n  ' \
+                'Executing the command: {}'.format(cmd)
+
+            log(preventing_oom_message)
+
+            err = start_thread(exe, cmd)
+
+            if err == 1:
+                key = 'Cannot execute the command in the new thread'
+                update_stat_dict(key)
+                log(key)
+
+            else:
+
+                update_stat_dict('Executing the command "{}"'.format(command))
+
+            response_time = monotonic() - time0
+
+            log('Total response time: {}ms'.format(round(
+                response_time * 1000)))
+
+            print_stat_dict()
+
+        else:
+
+            preventing_oom_message = 'Implementing a corrective action:\n  ' \
+                'Sending {} to the victim'.format(
+                    sig_dict[threshold])
+
+            log(preventing_oom_message)
+
+            try:
+
+                os.kill(int(pid), threshold)
+
+                update_stat_dict(
+                    '[ OK ] Sending {} to {}'.format(sig_dict[threshold], name)
+                )
+
+                response_time = monotonic() - time0
+
+                send_result = 'OK; total response time: {}ms'.format(
+                    round(response_time * 1000))
+
+                log(send_result)
+
+                if threshold is SIGKILL:
+                    vwd = True
+
+                print_stat_dict()
+
+            except ProcessLookupError:
+                vwd = True
+                key = 'Selected process died before corrective action'
+                update_stat_dict(key)
+                print_stat_dict()
+                log(key)
+
+            except PermissionError:
+                vwd = False
+                key = 'Cannot send a signal: PermissionError'
+                log(key)
+                update_stat_dict(key)
+                print_stat_dict()
+                log('Sleep {}s'.format(post_soft_action_delay))
+                sleep(10)
+
+        if not vwd:
+            if victim_id not in v_dict:
+                v_dict[victim_id] = dict()
+            v_dict[victim_id]['time'] = monotonic()
+            v_dict[victim_id]['name'] = name
+        else:
+            pass
+
+        last_action_dict['t'] = kill_timestamp = monotonic()
+
+        kill_timestamp = start_action
+
+        while True:
+            sleep(0.01)
+            d = monotonic() - kill_timestamp
+            iva = is_victim_alive(victim_id)
+
+            if iva == 0:
+
+                log('The victim died in {}s'.format(round(d, 3)))
+
+                if victim_id in v_dict:
+                    v_dict.pop(victim_id)
+                break
+
+            elif iva == 1:
+
+                if vwd and d > sensitivity_test_time + 10:
+                    log('The victim doesn\'t respond on corrective action'
+                        ' in {}s'.format(round(d, 3)))
+                    break
+
+                if not vwd and d > sensitivity_test_time:
+                    log('The victim doesn\'t respond on corrective action'
+                        ' in {}s'.format(round(d, 3)))
+                    break
+
+            elif iva == 2:
+                pass
+
+            else:
+
+                log('The victim became a zombie in {}s'.format(round(d, 3)))
+
+                if victim_id in v_dict:
+                    v_dict.pop(victim_id)
+                sleep(post_zombie_delay)
+                break
+
+        mem_available, _, swap_free = check_mem_and_swap()
+        ma_mib = int(mem_available) / 1024.0
+        sf_mib = int(swap_free) / 1024.0
+        log('Memory status after implementing a corrective act'
+            'ion:\n  MemAvailable'
+            ': {} MiB, SwapFree: {} MiB'.format(
+                round(ma_mib, 1), round(sf_mib, 1)))
+
+        if threshold is SIGKILL and post_kill_exe != '':
+            log('Executing post_kill_exe: {}'.format(post_kill_exe))
+            cmd = post_kill_exe.replace('$PID', pid).replace(
+                '$NAME', name).replace('$SERVICE', service)
+            start_thread(exe, cmd)
+
+        if post_action_gui_notifications:
+            if soft_match:
+                send_notify_etc(pid, name, cmd)
+            else:
+                send_notify(threshold, name, pid)
+
+    else:
+
+        response_time = monotonic() - time0
+
+        victim_badness_is_too_small = 'victim (PID: {}, Name: {}) badness ' \
+            '({}) < min_badness ({}); nothing to do; response tim' \
+            'e: {}ms'.format(
+                pid, name,
+                victim_badness,
+                min_badness,
+                round(response_time * 1000))
+
+        log(victim_badness_is_too_small)
+
+        # update stat_dict
+        key = 'victim badness < min_badness'
+        update_stat_dict(key)
+        print_stat_dict()
+
+    if vwd is None:
+
+        if debug_sleep:
+            log('Sleep {}s'.format(over_sleep))
+        sleep(over_sleep)
+
+    log(separator_out)
+
+    return None
+
+
+def sleep_after_check_mem():
+    """Specify sleep times depends on rates and avialable memory."""
+    if stable_sleep:
+
+        if debug_sleep:
+            log('Sleep {}s'.format(min_sleep))
+        stdout.flush()
+        sleep(min_sleep)
+        return None
+
+    if hard_threshold_min_mem_kb < soft_threshold_min_mem_kb:
+        mem_point = mem_available - soft_threshold_min_mem_kb
+    else:
+        mem_point = mem_available - hard_threshold_min_mem_kb
+
+    if hard_threshold_min_swap_kb < soft_threshold_min_swap_kb:
+        swap_point = swap_free - soft_threshold_min_swap_kb
+    else:
+        swap_point = swap_free - hard_threshold_min_swap_kb
+
+    if swap_point < 0:
+        swap_point = 0
+
+    if mem_point < 0:
+        mem_point = 0
+
+    t_mem = mem_point / fill_rate_mem
+    t_swap = swap_point / fill_rate_swap
+
+    if zram_checking_enabled:
+        t_zram = (mem_total * 0.8 - mem_used_zram) / fill_rate_zram
+        if t_zram < 0:
+            t_zram = 0
+        t_mem_zram = t_mem + t_zram
+        z = ', t_zram={}'.format(round(t_zram, 2))
+    else:
+        z = ''
+
+    t_mem_swap = t_mem + t_swap
+
+    if zram_checking_enabled:
+
+        if t_mem_swap <= t_mem_zram:
+            t = t_mem_swap
+        else:
+            t = t_mem_zram
+    else:
+        t = t_mem_swap
+
+    if t > max_sleep:
+        t = max_sleep
+    elif t < min_sleep:
+        t = min_sleep
+    else:
+        pass
+
+    if debug_sleep:
+        log('Sleep {}s (t_mem={}, t_swap={}{})'.format(round(t, 2), round(
+            t_mem, 2), round(t_swap, 2), z))
+
+    stdout.flush()
+    sleep(t)
+
+
+def calculate_percent(arg_key):
+    """
+    parse conf dict
+    Calculate mem_min_KEY_percent.
+
+    arg_key: str key for config_dict
+    returns int mem_min_percent or NoneType if got some error
+    """
+    if arg_key in config_dict:
+        mem_min = config_dict[arg_key]
+
+        if mem_min.endswith('%'):
+            # truncate percents, so we have a number
+            mem_min_percent = mem_min[:-1].strip()
+            # then 'float test'
+            mem_min_percent = string_to_float_convert_test(mem_min_percent)
+            if mem_min_percent is None:
+                invalid_config_key_value(arg_key)
+            # soft_threshold_min_mem_percent is clean and valid float
+            # percentage. Can translate into Kb
+            mem_min_kb = mem_min_percent / 100 * mem_total
+            mem_min_mb = round(mem_min_kb / 1024)
+
+        elif mem_min.endswith('M'):
+            mem_min_mb = string_to_float_convert_test(mem_min[:-1].strip())
+            if mem_min_mb is None:
+                invalid_config_key_value(arg_key)
+            mem_min_kb = mem_min_mb * 1024
+            mem_min_percent = mem_min_kb / mem_total * 100
+        else:
+            invalid_config_key_value(arg_key)
+    else:
+        missing_config_key(arg_key)
+
+    if (arg_key == 'soft_threshold_min_mem' or
+            arg_key == 'hard_threshold_min_mem'):
+        if mem_min_kb > mem_total * 0.5 or mem_min_kb < 0:
+            invalid_config_key_value(arg_key)
+
+    if (arg_key == 'soft_threshold_max_zram' or
+            arg_key == 'hard_threshold_max_zram'):
+        if mem_min_kb > mem_total * 0.9 or mem_min_kb < mem_total * 0.1:
+            invalid_config_key_value(arg_key)
+
+    if (arg_key == 'warning_threshold_min_mem' or
+            arg_key == 'warning_threshold_max_zram'):
+        if mem_min_kb > mem_total or mem_min_kb < 0:
+            invalid_config_key_value(arg_key)
+
+    return mem_min_kb, mem_min_mb, mem_min_percent
+
+
+def is_kmsg_ok():
+    """
+    """
+    m_test0 = monotonic()
+    test_string = 'nohang: clock calibration: {}\n'.format(m_test0)
+    try:
+        write(kmsg_path, test_string)
+    except Exception as e:
+        log(e)
+        return None
+    try:
+        with open(kmsg_path):
+            pass
+    except Exception as e:
+        log(e)
+        return None
+    return m_test0, test_string
+
+
+def check_kmsg_fn():
+    """
+    Checking kernel messages for OOM events.
+
+    It catches lines like follow:
+
+    3,591,248095206,-;Out of memory: Kill process 1061 (tail) score 917 or sacr
+     ifice child
+
+    3,1699,7208057400,-;Out of memory: Killed process 9277 (tail) total-vm:7837
+     24kB, anon-rss:566796kB, file-rss:1508kB, shmem-rss:0kB, UID:1000
+
+    3,728,398101038,-;Memory cgroup out of memory: Killed process 2497 (tail) t
+     otal-vm:6468944kB, anon-rss:3013188kB, file-rss:1676kB, shmem-rss:0kB, UID
+     : 1000 pgtables:12300kB oom_score_adj:0
+
+    4,2928853,54035939870,-;tail invoked oom-killer: gfp_mask=0x100cca(GFP_HIGH
+     USER_MOVABLE), order=0, oom_score_adj=0
+
+    6,2928994,54035940084,-;Tasks in /user.slice/user-1000.slice/session-235.sc
+     ope are going to be killed due to memory.oom.group set
+
+    6,2929028,54036119432,-;oom_reaper: reaped process 15512 (tail), now anon-r
+     ss:0kB, file-rss:0kB, shmem-rss:0kB
+
+    """
+    broken_pipe = False
+    start_t0 = monotonic()
+    counter = 0
+
+    with open(kmsg_path) as f:
+
+        while True:
+
+            d = monotonic() - start_t0
+            if d > kmsg_start_timeout:
+                log('kmsg: cannot start in {}s'.format(
+                    kmsg_start_timeout))
+                return None
+
+            try:
+                s = f.readline()
+                counter += 1
+                if broken_pipe:
+                    log('kmsg: BrokenPipeError occurred, some messages lost')
+                    broken_pipe = False
+            except BrokenPipeError:
+                broken_pipe = True
+                if debug_kmsg:
+                    log('debug kmsg: BrokenPipeError, sleep {}s'.format(
+                        sleep_at_broken_pipe))
+                sleep(sleep_at_broken_pipe)
+                continue
+
+            if test_string in s:
+
+                if debug_kmsg:
+                    log('debug kmsg: {}'.format(s[:-1]))
+
+                kmsg_mono0 = float(s.split(',')[2]) / 1000000
+                kmsg_t_delta = kmsg_mono0 - m_test0
+
+                if debug_kmsg:
+                    log('debug kmsg: kmsg_t_delta (kmsg_mono - test_mono)'
+                        ': {}'.format(round(kmsg_t_delta, 3)))
+
+                log('Checking kmsg for OOM events has started in {}s;'
+                    ' {} lines parsed'.format(round(d, 3), counter))
+
+                break
+
+        while True:
+
+            try:
+                s = f.readline()
+                if broken_pipe:
+                    log('kmsg: BrokenPipeError occurred, some messages lost')
+                    broken_pipe = False
+            except BrokenPipeError:
+                if debug_kmsg:
+                    log('debug kmsg: BrokenPipeError, sleep {}s'.format(
+                        sleep_at_broken_pipe))
+                broken_pipe = True
+                sleep(sleep_at_broken_pipe)
+                continue
+
+            if (s[:2] == '3,' and 'ut of memory: Kill' in s):
+
+                if debug_kmsg:
+                    log('debug kmsg: {}'.format(s[:-1]))
+
+                k_mono = float((s.split(',')[2])) / 1000000
+                krm = k_mono - kmsg_t_delta
+                oom_dict['t'] = krm
+                last_action_dict['t'] = krm
+                kmsg = s[:-1].rpartition(';')[2]
+                log('kmsg: {}'.format(kmsg))
+
+                update_stat_dict('kmsg: Out of memory: Kill')
+
+                continue
+
+            if s[:2] == '6,':
+
+                if ';oom_reaper: reaped process ' in s:
+
+                    if debug_kmsg:
+                        log('debug kmsg: {}'.format(s[:-1]))
+
+                    k_mono = float((s.split(',')[2])) / 1000000
+                    krm = k_mono - kmsg_t_delta
+                    last_action_dict['t'] = krm
+                    kmsg = s[:-1].rpartition(';')[2]
+                    log('kmsg: {}'.format(kmsg))
+
+                    update_stat_dict('kmsg: oom_reaper: reaped process')
+
+                    continue
+
+                if 'killed due to memory.oom.group set' in s:
+
+                    if debug_kmsg:
+                        log('debug kmsg: {}'.format(s[:-1]))
+
+                    k_mono = float((s.split(',')[2])) / 1000000
+                    krm = k_mono - kmsg_t_delta
+                    oom_dict['t'] = krm
+                    last_action_dict['t'] = krm
+                    kmsg = s[:-1].rpartition(';')[2]
+                    log('kmsg: {}'.format(kmsg))
+
+                    update_stat_dict('killed due to memory.oom.group set')
+
+                    continue
+
+            if (s[:2] == '4,' and ' invoked oom-killer: ' in s):
+
+                if debug_kmsg:
+                    log('debug kmsg: {}'.format(s[:-1]))
+
+                k_mono = float((s.split(',')[2])) / 1000000
+                krm = k_mono - kmsg_t_delta
+                oom_dict['t'] = krm
+                last_action_dict['t'] = krm
+                kmsg = s[:-1].rpartition(';')[2]
+                log('kmsg: {}'.format(kmsg))
+
+                update_stat_dict('kmsg: invoked oom-killer')
+                print_stat_dict()
+
+                if post_action_gui_notifications:
+                    send_notification(
+                        'kmsg: Out of memory!', 'invoked oom-killer')
+
+                continue
+
+
+###############################################################################
+
+
+# {victim_id : {'time': timestamp, 'name': name}
+v_dict = dict()
+
+start_time = monotonic()
+
+help_mess = """usage: nohang [-h|--help] [-v|--version] [-m|--memload]
+              [-c|--config CONFIG] [--check] [--monitor] [--tasks]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -v, --version         show version of installed package and exit
+  -m, --memload         consume memory until 40 MiB (MemAvailable + SwapFree)
+                        remain free, and terminate the process
+  -c CONFIG, --config CONFIG
+                        path to the config file. This should only be used
+                        with one of the following options:
+                        --monitor, --tasks, --check
+  --check               check and show the configuration and exit. This should
+                        only be used with -c/--config CONFIG option
+  --monitor             start monitoring. This should only be used with
+                        -c/--config CONFIG option
+  --tasks               show tasks state and exit. This should only be used
+                        with -c/--config CONFIG option"""
+
+
+SC_CLK_TCK = os.sysconf(os.sysconf_names['SC_CLK_TCK'])
+
+SC_PAGESIZE = os.sysconf(os.sysconf_names['SC_PAGESIZE'])
+
+sig_list = [SIGTERM, SIGINT, SIGQUIT, SIGHUP]
+
+sig_dict = {
+    SIGKILL: 'SIGKILL',
+    SIGINT: 'SIGINT',
+    SIGQUIT: 'SIGQUIT',
+    SIGHUP: 'SIGHUP',
+    SIGTERM: 'SIGTERM'
+}
+
+self_pid = str(os.getpid())
+
+self_uid = os.geteuid()
+
+root = bool(self_uid == 0)
+
+last_action_dict = dict()
+
+last_action_dict['t'] = monotonic()
+
+
+# will store corrective actions stat
+stat_dict = dict()
+
+
+separate_log = False  # will be overwritten after parse config
+
+
+cgroup_v1_index, cgroup_v2_index = find_cgroup_indexes()
+
+
+pid_list = alive_pid_list()
+
+
+print_proc_table_flag = False
+
+check_config_flag = False
+
+
+a = argv[1:]
+la = len(a)
+if la == 0:
+    errprint('ERROR: invalid input: missing CLI options\n')
+    errprint(help_mess)
+    exit(1)
+if la == 1:
+    if a[0] == '-h' or a[0] == '--help':
+        print(help_mess)
+        exit()
+    if a[0] == '-v' or a[0] == '--version':
+        print_version()
+    if a[0] == '-m' or a[0] == '--memload':
+        memload()
+    errprint('ERROR: invalid input\n')
+    errprint(help_mess)
+    exit(1)
+if la == 2:
+    errprint('ERROR: invalid input\n')
+    errprint(help_mess)
+    exit(1)
+if la == 3:
+    if '-c' in a or '--config' in a:
+        if '--monitor' in a or '--check' in a or '--tasks' in a:
+            try:
+                aaa = a.index('-c')
+            except ValueError:
+                pass
+            try:
+                aaa = a.index('--config')
+            except ValueError:
+                pass
+            try:
+                config = a[aaa + 1]
+            except IndexError:
+                errprint('ERROR: invalid input\n')
+                errprint(help_mess)
+                exit(1)
+            if (config == '--check' or config == '--monitor' or
+                    config == '--tasks:'):
+                errprint('ERROR: invalid input\n')
+                errprint(help_mess)
+                exit(1)
+            if '--check' in a:
+                check_config_flag = True
+            if '--tasks' in a:
+                print_proc_table_flag = True
+        else:
+            errprint('ERROR: invalid input\n')
+            errprint(help_mess)
+            exit(1)
+    else:
+        errprint('ERROR: invalid input\n')
+        errprint(help_mess)
+        exit(1)
+if la > 3:
+    errprint('ERROR: invalid CLI input: too many options\n')
+    errprint(help_mess)
+    exit(1)
+
+
+# find mem_total
+# find positions of SwapFree and SwapTotal in /proc/meminfo
+
+with open('/proc/meminfo') as f:
+    mem_list = f.readlines()
+
+mem_list_names = []
+
+for s in mem_list:
+    mem_list_names.append(s.split(':')[0])
+
+try:
+    mem_available_index = mem_list_names.index('MemAvailable')
+except ValueError:
+    errprint('ERROR: your Linux kernel is too old, Linux 3.14+ required')
+
+mem_free_index = mem_list_names.index('MemFree')
+swap_total_index = mem_list_names.index('SwapTotal')
+swap_free_index = mem_list_names.index('SwapFree')
+buffers_index = mem_list_names.index('Buffers')
+cached_index = mem_list_names.index('Cached')
+sreclaimable_index = mem_list_names.index('SReclaimable')
+shmem_info_index = mem_list_names.index('Shmem')
+
+mem_total = int(mem_list[0].split(':')[1][:-4])
+
+
+# Get names from /proc/*/status to be able to get VmRSS and VmSwap values
+
+with open('/proc/self/status') as file:
+    status_list = file.readlines()
+
+status_names = []
+for s in status_list:
+    status_names.append(s.split(':')[0])
+
+ppid_index = status_names.index('PPid')
+vm_size_index = status_names.index('VmSize')
+vm_rss_index = status_names.index('VmRSS')
+vm_swap_index = status_names.index('VmSwap')
+uid_index = status_names.index('Uid')
+state_index = status_names.index('State')
+
+
+try:
+    anon_index = status_names.index('RssAnon')
+    file_index = status_names.index('RssFile')
+    shmem_index = status_names.index('RssShmem')
+    detailed_rss = True
+    # print(detailed_rss, 'detailed_rss')
+except ValueError:
+    detailed_rss = False
+    # print('It is not Linux 4.5+')
+
+config = os.path.abspath(config)
+
+print('Starting nohang with config {}'.format(config))
+
+
+separator_in = '>>=== STARTING implement_corrective_action() ====>>'
+separator_out = '<<=== FINISHING implement_corrective_action() ===<<'
+
+
+###############################################################################
+
+
+fd = dict()
+
+
+# parsing the config with obtaining the parameters dictionary
+
+# conf_parameters_dict
+# conf_restart_dict
+
+# dictionary with config options
+config_dict = dict()
+
+badness_adj_re_name_list = []
+badness_adj_re_cmdline_list = []
+badness_adj_re_environ_list = []
+badness_adj_re_uid_list = []
+badness_adj_re_cgroup_v1_list = []
+badness_adj_re_cgroup_v2_list = []
+badness_adj_re_realpath_list = []
+badness_adj_re_cwd_list = []
+soft_actions_list = []
+
+# separator for optional parameters (that starts with @)
+opt_separator = '///'
+
+
+check_kmsg = False
+debug_kmsg = False
+
+
+# stupid conf parsing, it needs refactoring
+try:
+    with open(config) as f:
+
+        for line in f:
+
+            a = line.startswith('#')
+            b = line.startswith('\n')
+            c = line.startswith('\t')
+            d = line.startswith(' ')
+
+            etc = line.startswith('@SOFT_ACTION_RE_NAME')
+            etc2 = line.startswith('@SOFT_ACTION_RE_CGROUP_V1')
+            etc2_2 = line.startswith('@SOFT_ACTION_RE_CGROUP_V2')
+
+            if line.startswith('@check_kmsg'):
+                line = line.rstrip()
+                if line == '@check_kmsg':
+                    check_kmsg = True
+
+            if line.startswith('@debug_kmsg'):
+                line = line.rstrip()
+                if line == '@debug_kmsg':
+                    debug_kmsg = True
+
+            if (not a and not b and not c and not d and not etc and
+                    not etc2 and not etc2_2):
+                a = line.partition('=')
+
+                key = a[0].strip()
+                value = a[2].strip()
+
+                if key not in config_dict:
+                    config_dict[key] = value
+                else:
+                    errprint('ERROR: config key duplication: {}'.format(key))
+                    exit(1)
+
+            if etc:
+
+                a = line.partition('@SOFT_ACTION_RE_NAME')[
+                    2].partition(opt_separator)
+
+                a1 = 'name'
+
+                a2 = a[0].strip()
+                valid_re(a2)
+
+                a3 = a[2].strip()
+
+                zzz = (a1, a2, a3)
+
+                soft_actions_list.append(zzz)
+
+            if etc2:
+
+                a = line.partition('@SOFT_ACTION_RE_CGROUP_V1')[
+                    2].partition(opt_separator)
+
+                a1 = 'cgroup_v1'
+
+                a2 = a[0].strip()
+                valid_re(a2)
+
+                a3 = a[2].strip()
+
+                zzz = (a1, a2, a3)
+
+                soft_actions_list.append(zzz)
+
+            if etc2_2:
+
+                a = line.partition('@SOFT_ACTION_RE_CGROUP_V2')[
+                    2].partition(opt_separator)
+
+                a1 = 'cgroup_v2'
+
+                a2 = a[0].strip()
+                valid_re(a2)
+
+                a3 = a[2].strip()
+
+                zzz = (a1, a2, a3)
+
+                soft_actions_list.append(zzz)
+
+            if line.startswith('@BADNESS_ADJ_RE_NAME'):
+                a = line.partition('@BADNESS_ADJ_RE_NAME')[2].strip(
+                    ' \n').partition(opt_separator)
+                badness_adj = a[0].strip(' ')
+                reg_exp = a[2].strip(' ')
+                valid_re(reg_exp)
+                badness_adj_re_name_list.append((badness_adj, reg_exp))
+
+            if line.startswith('@BADNESS_ADJ_RE_CMDLINE'):
+                a = line.partition('@BADNESS_ADJ_RE_CMDLINE')[2].strip(
+                    ' \n').partition(opt_separator)
+                badness_adj = a[0].strip(' ')
+                reg_exp = a[2].strip(' ')
+                valid_re(reg_exp)
+                badness_adj_re_cmdline_list.append((badness_adj, reg_exp))
+
+            if line.startswith('@BADNESS_ADJ_RE_UID'):
+                a = line.partition('@BADNESS_ADJ_RE_UID')[2].strip(
+                    ' \n').partition(opt_separator)
+                badness_adj = a[0].strip(' ')
+                reg_exp = a[2].strip(' ')
+                valid_re(reg_exp)
+                badness_adj_re_uid_list.append((badness_adj, reg_exp))
+
+            if line.startswith('@BADNESS_ADJ_RE_CGROUP_V1'):
+                a = line.partition('@BADNESS_ADJ_RE_CGROUP_V1')[2].strip(
+                    ' \n').partition(opt_separator)
+                badness_adj = a[0].strip(' ')
+                reg_exp = a[2].strip(' ')
+                valid_re(reg_exp)
+                badness_adj_re_cgroup_v1_list.append((badness_adj, reg_exp))
+
+            if line.startswith('@BADNESS_ADJ_RE_CGROUP_V2'):
+                a = line.partition('@BADNESS_ADJ_RE_CGROUP_V2')[2].strip(
+                    ' \n').partition(opt_separator)
+                badness_adj = a[0].strip(' ')
+                reg_exp = a[2].strip(' ')
+                valid_re(reg_exp)
+                badness_adj_re_cgroup_v2_list.append((badness_adj, reg_exp))
+
+            if line.startswith('@BADNESS_ADJ_RE_REALPATH'):
+                a = line.partition('@BADNESS_ADJ_RE_REALPATH')[2].strip(
+                    ' \n').partition(opt_separator)
+                badness_adj = a[0].strip(' ')
+                reg_exp = a[2].strip(' ')
+                valid_re(reg_exp)
+                badness_adj_re_realpath_list.append((badness_adj, reg_exp))
+
+            if line.startswith('@BADNESS_ADJ_RE_CWD'):
+                a = line.partition('@BADNESS_ADJ_RE_CWD')[2].strip(
+                    ' \n').partition(opt_separator)
+                badness_adj = a[0].strip(' ')
+                reg_exp = a[2].strip(' ')
+                valid_re(reg_exp)
+                badness_adj_re_cwd_list.append((badness_adj, reg_exp))
+
+            if line.startswith('@BADNESS_ADJ_RE_ENVIRON'):
+                a = line.partition('@BADNESS_ADJ_RE_ENVIRON')[2].strip(
+                    ' \n').partition(opt_separator)
+                badness_adj = a[0].strip(' ')
+                reg_exp = a[2].strip(' ')
+                valid_re(reg_exp)
+                badness_adj_re_environ_list.append((badness_adj, reg_exp))
+
+
+except (PermissionError, UnicodeDecodeError, IsADirectoryError, IndexError,
+        FileNotFoundError) as e:
+    errprint(e)
+    errprint('Invalid config. Exit.')
+    exit(1)
+
+
+if badness_adj_re_name_list == []:
+    regex_matching = False
+else:
+    regex_matching = True
+
+
+if badness_adj_re_cmdline_list == []:
+    re_match_cmdline = False
+else:
+    re_match_cmdline = True
+
+
+if badness_adj_re_uid_list == []:
+    re_match_uid = False
+else:
+    re_match_uid = True
+
+
+if badness_adj_re_environ_list == []:
+    re_match_environ = False
+else:
+    re_match_environ = True
+
+
+if badness_adj_re_realpath_list == []:
+    re_match_realpath = False
+else:
+    re_match_realpath = True
+
+
+if badness_adj_re_cwd_list == []:
+    re_match_cwd = False
+else:
+    re_match_cwd = True
+
+
+if badness_adj_re_cgroup_v1_list == []:
+    re_match_cgroup_v1 = False
+else:
+    re_match_cgroup_v1 = True
+
+
+if badness_adj_re_cgroup_v2_list == []:
+    re_match_cgroup_v2 = False
+else:
+    re_match_cgroup_v2 = True
+
+
+if soft_actions_list == []:
+    soft_actions = False
+else:
+    soft_actions = True
+
+
+###############################################################################
+
+# extracting parameters from the dictionary
+# check for all necessary parameters
+# validation of all parameters
+
+separate_log = conf_parse_bool('separate_log')
+
+if separate_log:
+
+    import logging
+
+    log_dir = '/var/log/nohang'
+    logfile = log_dir + '/nohang.log'
+
+    try:
+        os.mkdir(log_dir)
+    except FileExistsError:
+        pass
+    except PermissionError:
+        errprint('ERROR: cannot create {}'.format(log_dir))
+        if root:
+            exit(1)
+
+    try:
+        os.chmod(log_dir, mode=0o750)
+    except FileNotFoundError:
+        errprint('ERROR: file not found: {}'.format(log_dir))
+        if root:
+            exit(1)
+    except PermissionError:
+        errprint('ERROR: permission denied: {}'.format(log_dir))
+        if root:
+            exit(1)
+
+    try:
+        logging.basicConfig(
+            filename=logfile,
+            level=logging.INFO,
+            format="%(asctime)s: %(message)s")
+    except FileNotFoundError:
+        errprint('ERROR: file not found: {}'.format(logfile))
+        if root:
+            exit(1)
+    except PermissionError:
+        errprint('ERROR: permission denied: {}'.format(logfile))
+        if root:
+            exit(1)
+
+if separate_log:
+    logging.info('Starting nohang with the config: {}'.format(config))
+
+
+debug_psi = conf_parse_bool('debug_psi')
+print_statistics = conf_parse_bool('print_statistics')
+print_proc_table = conf_parse_bool('print_proc_table')
+print_victim_status = conf_parse_bool('print_victim_status')
+print_victim_cmdline = conf_parse_bool('print_victim_cmdline')
+print_config_at_startup = conf_parse_bool('print_config_at_startup')
+print_mem_check_results = conf_parse_bool('print_mem_check_results')
+debug_sleep = conf_parse_bool('debug_sleep')
+hide_corrective_action_type = conf_parse_bool('hide_corrective_action_type')
+low_memory_warnings_enabled = conf_parse_bool('low_memory_warnings_enabled')
+
+post_action_gui_notifications = conf_parse_bool(
+    'post_action_gui_notifications')
+
+debug_threading = conf_parse_bool('debug_threading')
+
+psi_checking_enabled = conf_parse_bool('psi_checking_enabled')
+
+try:
+    psi_file_mem_to_metrics('/proc/pressure/memory')
+    PSI_KERNEL_OK = True
+except Exception as e:
+    PSI_KERNEL_OK = False
+    if psi_checking_enabled:
+        log('WARNING: PSI metrics are not provided by the kernel: {}'.format(
+            e))
+
+CHECK_PSI = bool(PSI_KERNEL_OK and psi_checking_enabled)
+
+zram_checking_enabled = conf_parse_bool('zram_checking_enabled')
+
+debug_gui_notifications = conf_parse_bool('debug_gui_notifications')
+ignore_positive_oom_score_adj = conf_parse_bool(
+    'ignore_positive_oom_score_adj')
+
+(soft_threshold_min_mem_kb, soft_threshold_min_mem_mb,
+ soft_threshold_min_mem_percent) = calculate_percent('soft_threshold_min_mem')
+
+(hard_threshold_min_mem_kb, hard_threshold_min_mem_mb,
+ hard_threshold_min_mem_percent) = calculate_percent('hard_threshold_min_mem')
+
+(soft_threshold_max_zram_kb, soft_threshold_max_zram_mb,
+ soft_threshold_max_zram_percent) = calculate_percent(
+     'soft_threshold_max_zram')
+
+(hard_threshold_max_zram_kb, hard_threshold_max_zram_mb,
+ hard_threshold_max_zram_percent) = calculate_percent(
+     'hard_threshold_max_zram')
+
+(warning_threshold_min_mem_kb, warning_threshold_min_mem_mb,
+ warning_threshold_min_mem_percent) = calculate_percent(
+     'warning_threshold_min_mem')
+
+(warning_threshold_max_zram_kb, warning_threshold_max_zram_mb,
+ warning_threshold_max_zram_percent) = calculate_percent(
+     'warning_threshold_max_zram')
+
+if 'post_zombie_delay' in config_dict:
+    post_zombie_delay = string_to_float_convert_test(
+        config_dict['post_zombie_delay'])
+    if post_zombie_delay is None or post_zombie_delay < 0:
+        invalid_config_key_value('post_zombie_delay')
+else:
+    missing_config_key('post_zombie_delay')
+
+if 'victim_cache_time' in config_dict:
+    victim_cache_time = string_to_float_convert_test(
+        config_dict['victim_cache_time'])
+    if victim_cache_time is None or victim_cache_time < 0:
+        invalid_config_key_value('victim_cache_time')
+else:
+    missing_config_key('victim_cache_time')
+
+
+if 'env_cache_time' in config_dict:
+    env_cache_time = string_to_float_convert_test(
+        config_dict['env_cache_time'])
+    if env_cache_time is None or env_cache_time < 0:
+        invalid_config_key_value('env_cache_time')
+else:
+    missing_config_key('env_cache_time')
+
+
+if 'exe_timeout' in config_dict:
+    exe_timeout = string_to_float_convert_test(config_dict['exe_timeout'])
+    if exe_timeout is None or exe_timeout < 0.1:
+        invalid_config_key_value('exe_timeout')
+else:
+    missing_config_key('exe_timeout')
+
+
+if 'fill_rate_mem' in config_dict:
+    fill_rate_mem = string_to_float_convert_test(config_dict['fill_rate_mem'])
+    if fill_rate_mem is None or fill_rate_mem < 100:
+        invalid_config_key_value('fill_rate_mem')
+else:
+    missing_config_key('fill_rate_mem')
+
+
+if 'fill_rate_swap' in config_dict:
+    fill_rate_swap = string_to_float_convert_test(
+        config_dict['fill_rate_swap'])
+    if fill_rate_swap is None or fill_rate_swap < 100:
+        invalid_config_key_value('fill_rate_swap')
+else:
+    missing_config_key('fill_rate_swap')
+
+
+if 'fill_rate_zram' in config_dict:
+    fill_rate_zram = string_to_float_convert_test(
+        config_dict['fill_rate_zram'])
+    if fill_rate_zram is None or fill_rate_zram < 100:
+        invalid_config_key_value('fill_rate_zram')
+else:
+    missing_config_key('fill_rate_zram')
+
+
+if 'soft_threshold_min_swap' in config_dict:
+    soft_threshold_min_swap = config_dict['soft_threshold_min_swap']
+else:
+    errprint('soft_threshold_min_swap not in config\nExit')
+    exit(1)
+
+
+if 'hard_threshold_min_swap' in config_dict:
+    hard_threshold_min_swap = config_dict['hard_threshold_min_swap']
+else:
+    missing_config_key('hard_threshold_min_swap')
+
+
+if 'post_soft_action_delay' in config_dict:
+    post_soft_action_delay = string_to_float_convert_test(
+        config_dict['post_soft_action_delay'])
+    if post_soft_action_delay is None or post_soft_action_delay < 0.1:
+        invalid_config_key_value('post_soft_action_delay')
+else:
+    missing_config_key('post_soft_action_delay')
+
+
+if 'psi_post_action_delay' in config_dict:
+    psi_post_action_delay = string_to_float_convert_test(
+        config_dict['psi_post_action_delay'])
+    if psi_post_action_delay is None or psi_post_action_delay < 10:
+        invalid_config_key_value('psi_post_action_delay')
+else:
+    missing_config_key('psi_post_action_delay')
+
+
+if 'hard_threshold_max_psi' in config_dict:
+    hard_threshold_max_psi = string_to_float_convert_test(
+        config_dict['hard_threshold_max_psi'])
+    if (hard_threshold_max_psi is None or hard_threshold_max_psi < 1 or
+            hard_threshold_max_psi > 100):
+        invalid_config_key_value('hard_threshold_max_psi')
+else:
+    missing_config_key('hard_threshold_max_psi')
+
+
+if 'soft_threshold_max_psi' in config_dict:
+    soft_threshold_max_psi = string_to_float_convert_test(
+        config_dict['soft_threshold_max_psi'])
+    if (soft_threshold_max_psi is None or soft_threshold_max_psi < 1 or
+            soft_threshold_max_psi > 100):
+        invalid_config_key_value('soft_threshold_max_psi')
+else:
+    missing_config_key('soft_threshold_max_psi')
+
+
+if 'warning_threshold_max_psi' in config_dict:
+    warning_threshold_max_psi = string_to_float_convert_test(
+        config_dict['warning_threshold_max_psi'])
+    if (warning_threshold_max_psi is None or warning_threshold_max_psi < 1 or
+            warning_threshold_max_psi > 100):
+        invalid_config_key_value('warning_threshold_max_psi')
+else:
+    missing_config_key('warning_threshold_max_psi')
+
+
+if 'min_badness' in config_dict:
+    min_badness = string_to_int_convert_test(config_dict['min_badness'])
+    if min_badness is None or min_badness < 1:
+        invalid_config_key_value('min_badness')
+else:
+    missing_config_key('min_badness')
+
+
+if 'min_post_warning_delay' in config_dict:
+    min_post_warning_delay = string_to_float_convert_test(
+        config_dict['min_post_warning_delay'])
+    if min_post_warning_delay is None or min_post_warning_delay < 1:
+        invalid_config_key_value('min_post_warning_delay')
+else:
+    missing_config_key('min_post_warning_delay')
+
+
+if 'warning_threshold_min_swap' in config_dict:
+    warning_threshold_min_swap = config_dict['warning_threshold_min_swap']
+else:
+    missing_config_key('warning_threshold_min_swap')
+
+
+if 'max_victim_ancestry_depth' in config_dict:
+    max_victim_ancestry_depth = string_to_int_convert_test(
+        config_dict['max_victim_ancestry_depth'])
+    if min_badness is None:
+        errprint('Invalid max_victim_ancestry_depth value, not integer\nExit')
+        exit(1)
+    if max_victim_ancestry_depth < 1:
+        errprint('Invalid max_victim_ancestry_depth value\nExit')
+        exit(1)
+else:
+    missing_config_key('max_victim_ancestry_depth')
+
+
+if 'max_soft_exit_time' in config_dict:
+    max_soft_exit_time = string_to_float_convert_test(
+        config_dict['max_soft_exit_time'])
+    if max_soft_exit_time is None or max_soft_exit_time < 0.1:
+        invalid_config_key_value('max_soft_exit_time')
+else:
+    missing_config_key('max_soft_exit_time')
+
+
+if 'post_kill_exe' in config_dict:
+    post_kill_exe = config_dict['post_kill_exe']
+else:
+    missing_config_key('post_kill_exe')
+
+
+if 'psi_path' in config_dict:
+    psi_path = config_dict['psi_path']
+    if CHECK_PSI:
+        try:
+            psi_file_mem_to_metrics(psi_path)
+        except Exception as e:
+            errprint('WARNING: invalid psi_path "{}": {}'.format(psi_path, e))
+else:
+    missing_config_key('psi_path')
+
+
+if 'psi_metrics' in config_dict:
+    psi_metrics = config_dict['psi_metrics']
+    valid_metrics = {
+        'some_avg10', 'some_avg60', 'some_avg300',
+        'full_avg10', 'full_avg60', 'full_avg300'}
+    if psi_metrics not in valid_metrics:
+        invalid_config_key_value('psi_metrics')
+else:
+    missing_config_key('psi_metrics')
+
+
+if 'warning_exe' in config_dict:
+    warning_exe = config_dict['warning_exe']
+    check_warning_exe = bool(warning_exe != '')
+else:
+    missing_config_key('warning_exe')
+
+
+if 'extra_table_info' in config_dict:
+    extra_table_info = config_dict['extra_table_info']
+    valid_eti = {'None', 'cwd', 'realpath',
+                 'cgroup_v1', 'cgroup_v2', 'cmdline', 'environ'}
+    if extra_table_info not in valid_eti:
+        invalid_config_key_value('extra_table_info')
+else:
+    missing_config_key('extra_table_info')
+
+
+if 'min_mem_report_interval' in config_dict:
+    min_mem_report_interval = string_to_float_convert_test(
+        config_dict['min_mem_report_interval'])
+    if min_mem_report_interval is None or min_mem_report_interval < 0:
+        invalid_config_key_value('min_mem_report_interval')
+else:
+    missing_config_key('min_mem_report_interval')
+
+
+if 'psi_excess_duration' in config_dict:
+    psi_excess_duration = string_to_float_convert_test(
+        config_dict['psi_excess_duration'])
+    if psi_excess_duration is None or psi_excess_duration < 0:
+        invalid_config_key_value('psi_excess_duration')
+else:
+    missing_config_key('psi_excess_duration')
+
+
+if 'max_sleep' in config_dict:
+    max_sleep = string_to_float_convert_test(
+        config_dict['max_sleep'])
+    if max_sleep is None or max_sleep < 0.01:
+        invalid_config_key_value('max_sleep')
+else:
+    missing_config_key('max_sleep')
+
+
+if 'min_sleep' in config_dict:
+    min_sleep = string_to_float_convert_test(
+        config_dict['min_sleep'])
+    if min_sleep is None or min_sleep < 0.01 or min_sleep > max_sleep:
+        invalid_config_key_value('min_sleep')
+else:
+    missing_config_key('min_sleep')
+
+
+over_sleep = min_sleep
+sensitivity_test_time = over_sleep / 4
+stable_sleep = bool(max_sleep == min_sleep)
+
+
+if print_proc_table_flag:
+    check_permissions()
+    func_print_proc_table()
+
+
+if (check_kmsg or
+    low_memory_warnings_enabled or
+    post_action_gui_notifications or
+    check_warning_exe or
+    soft_actions or
+        post_kill_exe != ''):
+
+    import threading
+    import shlex
+    from subprocess import Popen, TimeoutExpired
+
+
+# Get KiB levels if it's possible.
+
+soft_threshold_min_swap_tuple = get_swap_threshold_tuple(
+    soft_threshold_min_swap, 'soft_threshold_min_swap')
+hard_threshold_min_swap_tuple = get_swap_threshold_tuple(
+    hard_threshold_min_swap, 'hard_threshold_min_swap')
+warning_threshold_min_swap_tuple = get_swap_threshold_tuple(
+    warning_threshold_min_swap, 'warning_threshold_min_swap')
+
+
+swap_kb_dict = dict()
+
+swap_term_is_percent = soft_threshold_min_swap_tuple[1]
+if swap_term_is_percent:
+    soft_threshold_min_swap_percent = soft_threshold_min_swap_tuple[0]
+else:
+    soft_threshold_min_swap_kb = soft_threshold_min_swap_tuple[0]
+    swap_kb_dict['soft_threshold_min_swap_kb'] = soft_threshold_min_swap_kb
+
+swap_kill_is_percent = hard_threshold_min_swap_tuple[1]
+if swap_kill_is_percent:
+    hard_threshold_min_swap_percent = hard_threshold_min_swap_tuple[0]
+else:
+    hard_threshold_min_swap_kb = hard_threshold_min_swap_tuple[0]
+    swap_kb_dict['hard_threshold_min_swap_kb'] = hard_threshold_min_swap_kb
+
+
+swap_warn_is_percent = warning_threshold_min_swap_tuple[1]
+if swap_warn_is_percent:
+    warning_threshold_min_swap_percent = warning_threshold_min_swap_tuple[0]
+else:
+    warning_threshold_min_swap_kb = warning_threshold_min_swap_tuple[0]
+    swap_kb_dict[
+        'warning_threshold_min_swap_kb'] = warning_threshold_min_swap_kb
+
+
+if print_config_at_startup or check_config_flag:
+    check_config()
+
+
+# for calculating the column width when printing mem and zram
+mem_len = len(str(round(mem_total / 1024.0)))
+
+if post_action_gui_notifications:
+    notify_sig_dict = {SIGKILL: 'Killing',
+                       SIGTERM: 'Terminating'}
+
+
+# convert rates from MiB/s to KiB/s
+fill_rate_mem = fill_rate_mem * 1024
+fill_rate_swap = fill_rate_swap * 1024
+fill_rate_zram = fill_rate_zram * 1024
+
+
+warn_time_now = 0
+warn_time_delta = 1000  # ?
+warn_timer = 0
+
+
+mlockall()
+
+check_permissions()
+
+
+psi_avg_string = ''  # will be overwritten if PSI monitoring enabled
+
+mem_used_zram = 0
+
+
+if print_mem_check_results:
+
+    # to find delta mem
+    wt2 = 0
+    new_mem = 0
+
+    # init mem report interval
+    report0 = 0
+
+
+# handle signals
+for i in sig_list:
+    signal(i, signal_handler)
+
+
+x0 = monotonic()
+delta0 = 0
+
+
+threshold = None
+mem_info = None
+
+
+psi_kill_exceeded_timer = psi_term_exceeded_timer = -0.0001
+psi_threshold = zram_threshold = zram_info = psi_info = None
+
+
+log('Monitoring has started!')
+
+stdout.flush()
+
+
+display_env = 'DISPLAY='
+dbus_env = 'DBUS_SESSION_BUS_ADDRESS='
+user_env = 'USER='
+
+envd = dict()
+envd['list_with_envs'] = envd['t'] = None
+
+
+cmd_num_dict = dict()
+cmd_num_dict['cmd_num'] = 0
+
+
+fd['mi'] = open('/proc/meminfo', 'rb', buffering=0)
+
+
+arcstats_path = '/proc/spl/kstat/zfs/arcstats'
+# arcstats_path = './arcstats'
+
+ZFS = os.path.exists(arcstats_path)
+
+
+kmsg_path = '/dev/kmsg'
+
+post_oom_delay = 1.0
+
+kmsg_start_timeout = 10.0
+
+sleep_at_broken_pipe = 0.1
+
+oom_dict = dict()
+
+oom_dict['t'] = None
+
+
+if check_kmsg:
+    kmsg_test = is_kmsg_ok()
+    if kmsg_test is not None:
+        m_test0, test_string = kmsg_test
+        start_thread(check_kmsg_fn)
+
+
+if ZFS:
+    log('WARNING: ZFS found. Available memory will not be calculated '
+        'correctly (issue#89)')
+
+while True:
+
+    (masf_threshold, masf_info, mem_available, hard_threshold_min_swap_kb,
+     soft_threshold_min_swap_kb, swap_free, swap_total) = check_mem_swap_ex()
+
+    if zram_checking_enabled:
+        zram_threshold, zram_info, mem_used_zram = check_zram_ex()
+
+    if CHECK_PSI:
+        (psi_threshold, psi_info, psi_kill_exceeded_timer,
+         psi_term_exceeded_timer, x0) = check_psi_ex(
+             psi_kill_exceeded_timer, psi_term_exceeded_timer, x0,
+             mem_available)
+
+    if print_mem_check_results:
+
+        if CHECK_PSI:
+            psi_avg_value = find_psi_metrics_value(psi_path, psi_metrics)
+            psi_post_action_delay_exceeded = bool(
+                monotonic() >= psi_post_action_delay)
+            if print_mem_check_results:
+                psi_avg_string = 'PSI: {} | '.format(
+                    str(psi_avg_value).rjust(6))
+
+        wt1 = monotonic()
+        delta = (mem_available + swap_free) - new_mem
+        t_cycle = wt1 - wt2
+        report_delta = wt1 - report0
+
+        if report_delta >= min_mem_report_interval:
+            mem_report = True
+            new_mem = mem_available + swap_free
+            report0 = wt1
+        else:
+            mem_report = False
+
+        wt2 = monotonic()
+
+        if mem_report:
+
+            speed = delta / 1024.0 / report_delta
+            speed_info = ' | dMem: {} M/s'.format(
+                str(round(speed)).rjust(5))
+
+            # Calculate 'swap-column' width
+            swap_len = len(str(round(swap_total / 1024.0)))
+
+            # Output available mem sizes
+            if swap_total == 0 and mem_used_zram == 0:
+                log('{}MemAvail: {} M, {} %{}'.format(
+                    psi_avg_string,
+                    human(mem_available, mem_len),
+                    just_percent_mem(mem_available / mem_total),
+                    speed_info))
+
+            elif swap_total > 0 and mem_used_zram == 0:
+                log('{}MemAvail: {} M, {} % | SwapFree: {} M, {} %{}'.format(
+                    psi_avg_string,
+                    human(mem_available, mem_len),
+                    just_percent_mem(mem_available / mem_total),
+                    human(swap_free, swap_len),
+                    just_percent_swap(swap_free / (swap_total + 0.1)),
+                    speed_info))
+
+            else:
+                log('{}MemAvail: {} M, {} % | SwapFree: {} M, {} % | Mem'
+                    'UsedZram: {} M, {} %{}'.format(
+                        psi_avg_string,
+                        human(mem_available, mem_len),
+                        just_percent_mem(mem_available / mem_total),
+                        human(swap_free, swap_len),
+                        just_percent_swap(swap_free / (swap_total + 0.1)),
+                        human(mem_used_zram, mem_len),
+                        just_percent_mem(mem_used_zram / mem_total),
+                        speed_info))
+
+    if (masf_threshold == SIGKILL or zram_threshold == SIGKILL or
+            psi_threshold == SIGKILL):
+
+        threshold = SIGKILL
+        mem_info_list = []
+
+        if masf_info is not None:
+            mem_info_list.append(masf_info)
+
+        if zram_info is not None:
+            mem_info_list.append(zram_info)
+
+        if psi_info is not None:
+            mem_info_list.append(psi_info)
+
+        implement_corrective_action(
+            threshold,
+            mem_info_list,
+            psi_kill_exceeded_timer,
+            psi_term_exceeded_timer,
+            x0, psi_threshold, zram_threshold, zram_info, psi_info)
+        continue
+
+    if (masf_threshold == SIGTERM or zram_threshold == SIGTERM or
+            psi_threshold == SIGTERM):
+
+        threshold = SIGTERM
+        mem_info_list = []
+
+        if masf_info is not None:
+            mem_info_list.append(masf_info)
+
+        if zram_info is not None:
+            mem_info_list.append(zram_info)
+
+        if psi_info is not None:
+
+            mem_info_list.append(psi_info)
+
+        implement_corrective_action(
+            threshold,
+            mem_info_list,
+            psi_kill_exceeded_timer,
+            psi_term_exceeded_timer,
+            x0, psi_threshold, zram_threshold, zram_info, psi_info)
+        continue
+
+    if low_memory_warnings_enabled:
+
+        if (masf_threshold == 'WARN' or zram_threshold == 'WARN' or
+                psi_threshold == 'WARN'):
+
+            warn_time_delta = monotonic() - warn_time_now
+            warn_time_now = monotonic()
+            warn_timer += warn_time_delta
+            if warn_timer > min_post_warning_delay:
+
+                send_notify_warn()
+
+                warn_timer = 0
+
+    sleep_after_check_mem()

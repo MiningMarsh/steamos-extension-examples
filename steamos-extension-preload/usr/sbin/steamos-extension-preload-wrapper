@@ -1,0 +1,22 @@
+#!/usr/bin/env zsh
+
+cat > /tmp/preload.conf << EOF 
+[model]
+cycle = 20
+usecorrelation = true
+minsize = 2000000
+memtotal = -10
+memfree = 50
+memcached = 0
+
+[system]
+doscan = true
+dopredict = true
+autosave = 3600
+mapprefix = !/dev;!/proc;!/sys;!/tmp;!/var/tmp;!/home/deck/.zram;!/run;!/var/run;/
+exeprefix = !/dev;!/proc;!/sys;!/tmp;!/var/tmp;!/home/deck/.zram;!/run;!/var/run;/
+processes = $(nproc --all)
+sortstrategy = 3
+EOF
+
+/usr/sbin/steamos-extension-preload -V 0 -n 19 -s /var/lib/preload.state -f -c /tmp/preload.conf

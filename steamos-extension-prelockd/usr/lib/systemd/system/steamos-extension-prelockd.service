@@ -1,0 +1,13 @@
+[Unit]
+Description=Prevent Executable Pages from Swapping
+DefaultDependencies=false
+Requires=systemd-sysext.service
+After=systemd-sysext.service
+Before=sysinit.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/steamos-extension-prelockd -c /usr/share/steamos-extension-prelockd.conf
+
+[Install]
+WantedBy=sysinit.target

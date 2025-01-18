@@ -1,0 +1,8 @@
+#!/usr/bin/env zsh
+
+while true; do
+	sleep 300
+	for compact in /sys/block/zram*/compact; do 
+		echo > $compact
+	done
+done

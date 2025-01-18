@@ -1,0 +1,65 @@
+#!/usr/bin/env zsh
+set -e
+
+grep -oE '/dev/zram[0-9]+' /proc/swaps | while read -r swap; do
+	swapoff $swap
+done
+
+if mount | grep -q /home/deck/.zram/ram/mountpoint; then
+	mount | grep -E 'on '/home/deck'/[.]zram/ram/mountpoint/[^ ]+ type btrfs' | awk '{print $3}' | while read -r mountpoint; do
+		umount -l $mountpoint
+		find $mountpoint -mindepth 1 -delete
+	done
+	mount | grep -E '^zram-overlay' | awk '{print $3}' | grep -vE '^'/home/deck'/[.]zram/ram/mountpoint$' | while read -r mountpoint; do
+		umount -l $mountpoint
+	done
+
+	mkdir -p /home/deck/.zram/ram/buffered /home/deck/.zram/ram/overlay-tools-merge/temp 
+	find /home/deck/.zram/ram/buffered -mindepth 1 -delete || true
+	pushd /home/deck/.zram/ram/overlay-tools-merge
+
+	/usr/sbin/steamos-extension-zram-overlay-tool deref \
+		-u /home/deck/.zram/ram/changed \
+		-l /home/deck/.zram/current \
+		-U /home/deck/.zram/ram/buffered \
+		-L temp \
+		-m /home/deck/.zram/ram/mountpoint \
+		|| true
+	grep -vE 'LOWER(NEW|DIR)' *.sh > deref.sh
+	bash deref.sh > /dev/null 2>&1 || true
+	rm -rf *.sh temp /home/deck/.zram/ram/changed
+
+	umount -l /home/deck/.zram/ram/mountpoint
+	rm -rf /home/deck/.zram/ram/{mountpoint,changing}
+
+	/usr/sbin/steamos-extension-zram-overlay-tool vacuum \
+		-u /home/deck/.zram/ram/buffered \
+		-l /home/deck/.zram/current \
+		|| true
+	bash *.sh > /dev/null 2>&1 || true
+	rm -rf *.sh
+	mkdir -p /home/deck/.zram/buffered
+
+	/usr/sbin/steamos-extension-zram-overlay-tool merge \
+		-u /home/deck/.zram/ram/buffered \
+		-l /home/deck/.zram/current \
+		|| true
+	bash *.sh > /dev/null 2>&1 || true
+	popd
+	rm -rf /home/deck/.zram/ram/{overlay-tools-merge,buffered}
+fi
+
+if mount | grep -q /home/deck/.zram/ram; then
+	umount -l /home/deck/.zram/ram
+	chown deck:deck -R /home/deck/.zram
+fi
+
+sync
+
+if lsmod | grep -q zram; then
+	rmmod zram || true
+fi
+
+if mount | grep -q '/var/tmp on /var/tmp type tmpfs'; then
+	umount -l /var/tmp
+fi

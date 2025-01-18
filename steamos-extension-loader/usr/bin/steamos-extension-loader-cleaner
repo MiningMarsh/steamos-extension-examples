@@ -1,0 +1,9 @@
+#!/usr/bin/env zsh
+set -e
+
+if ! [[ -d ~/.config/systemd/user ]]; then
+	exit 0
+fi
+
+find ~/.config/systemd/user -xtype l -delete
+find ~/.config/systemd/user -mindepth 1 -type d -empty -delete

@@ -1,0 +1,9 @@
+[Unit]
+Description=Update Plugin Loader
+Requires=network.target network-online.target systemd-sysext.service
+
+[Timer]
+OnCalendar=hourly
+
+[Install]
+WantedBy=timers.target

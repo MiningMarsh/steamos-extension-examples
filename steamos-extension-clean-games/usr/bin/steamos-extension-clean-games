@@ -1,0 +1,23 @@
+#!/usr/bin/env zsh
+set -e
+
+for folder in compatdata shadercache; do
+	for target in ~/.local/share/Steam/steamapps/$folder/*; do 
+		if echo "$target" | grep -q '[*]'; then
+			break
+		fi
+		game="$(basename "$target")"
+		if [[ 0 -ne $game ]] && ! [[ -e ~/.local/share/Steam/steamapps/appmanifest_$game.acf ]]; then 
+			rm -rf $target
+		fi
+	done
+done
+
+diff \
+	=(ls ~/.local/share/Steam/steamapps/common/ | sort | uniq | grep -vE '^(Steam[.]dll|Steam Controller Configs)$') \
+	=(grep '"installdir"' ~/.local/share/Steam/steamapps/appmanifest_*.acf | cut -f4 -d'"' | sort | uniq) \
+	| grep -E '^<' | cut -b3- \
+	| sort | uniq | \
+	while read -r game; do
+		rm -rf ~/.local/share/Steam/steamapps/common/"$game"
+	done

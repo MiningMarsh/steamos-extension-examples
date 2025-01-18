@@ -1,0 +1,1 @@
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="sd[a-zA-Z]|sd[a-zA-Z][a-zA-z]", RUN+="/usr/sbin/steamos-extension-performance-tuning-dispatch sd %k"

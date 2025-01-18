@@ -1,0 +1,46 @@
+#!/usr/bin/env zsh
+set -e
+
+function same {
+	[[ -f $1 ]] && [[ -f $2 ]] && [[ "$(md5sum < $1)" == "$(md5sum < $2)" ]]
+}
+
+if ! [[ -e /etc/atomic-update.conf.d ]]; then
+	mkdir /etc/atomic-update.conf.d
+fi
+
+if ! same \
+	/usr/share/steamos-extension-loader-atomic-update.conf \
+	/etc/atomic-update.conf.d/steamos-extension-loader.conf
+then
+	echo mkdir -p /etc/atomic-update.conf.d
+	cp \
+		/usr/share/steamos-extension-loader-atomic-update.conf \
+		/etc/atomic-update.conf.d/steamos-extension-loader.conf
+fi
+
+if ! same \
+	/usr/share/steamos-extension-loader.service \
+	/etc/systemd/system/steamos-extension-loader.service
+then
+	cp \
+		/usr/share/steamos-extension-loader.service \
+		/etc/systemd/system/steamos-extension-loader.service
+
+	systemctl daemon-reload || true
+	systemctl stop --no-block steamos-extension-loader.service || true
+fi
+
+if ! same \
+	/usr/share/steamos-extension-loader \
+	/etc/steamos-extension-loader
+then
+	cp \
+		/usr/share/steamos-extension-loader \
+		/etc/steamos-extension-loader
+
+	chmod +x /etc/steamos-extension-loader
+	systemctl stop --no-block steamos-extension-loader.service || true
+fi
+
+systemctl enable --now --no-block steamos-extension-loader.service || true

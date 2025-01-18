@@ -1,0 +1,9 @@
+#!/usr/bin/env zsh
+set -e
+
+efibootmgr --bootnext=$(
+	efibootmgr \
+	| grep -E '(SteamOS|HoloISO)' \
+	| cut -f1 -d'*' \
+	| cut -f2 -dt
+)

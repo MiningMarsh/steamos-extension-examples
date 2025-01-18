@@ -1,0 +1,19 @@
+[Unit]
+Description=Configure zRAM Swap/Cache
+DefaultDependencies=false
+Requires=systemd-sysext.service 
+Wants=steamos-extension-kernel-cmdline.service
+Conflicts=systemd-zram-setup@zram0.service systemd-zram-setup@zram1.service
+After=systemd-sysext.service steamos-extension-kernel-cmdline.service
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+TimeoutStartSec=infinity
+TimeoutStopSec=infinity
+ExecStart=/usr/sbin/steamos-extension-zram-start
+ExecStop=/usr/sbin/steamos-extension-zram-stop
+
+[Install]
+WantedBy=sysinit.target

@@ -1,0 +1,6 @@
+#!/usr/bin/env zsh
+
+if [[ -f /tmp/.kernel-cmdline-modified ]]; then
+	rm -rf /tmp/.kernel-cmdline-modified
+	reboot
+fi

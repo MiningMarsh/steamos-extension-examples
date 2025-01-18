@@ -1,0 +1,74 @@
+#!/usr/bin/env zsh
+set -e
+
+until {
+	/usr/sbin/steamos-extension-zram-stop
+
+	modprobe zram num_devices=2 || true
+
+	for zram in /sys/block/zram*; do
+		echo | tee $zram/reset > /dev/null 2>&1
+		echo 1 | tee $zram/reset > /dev/null 2>&1
+		echo zstd > $zram/comp_algorithm
+		nproc --all > $zram/max_comp_streams
+		echo $(( $(grep MemTotal /proc/meminfo | awk '{print $2}') / 3 ))K > $zram/disksize
+	done
+
+	mkswap -L zram /dev/zram0 > /dev/null 2>&1
+	mkfs.ext4 -L zram -m 0 -O '^has_journal,uninit_bg,sparse_super,sparse_super2' /dev/zram1 > /dev/null 2>&1
+}; do sleep 1; done
+
+swapon -d -f -p 100 /dev/zram0 > /dev/null 2>&1
+mkdir -p /home/deck/.zram/{current,ram}
+find /home/deck/.zram/ram -mindepth 1 -delete || true
+chown deck:deck -R /home/deck/.zram
+mount /dev/zram1 -o discard /home/deck/.zram/ram > /dev/null 2>&1
+mkdir -p /home/deck/.zram/ram/{changed,changing,mountpoint}
+chown deck:deck -R /home/deck/.zram
+
+mount zram-overlay -t overlay -o metacopy=on,xino=on,redirect_dir=on,lowerdir=/home/deck/.zram/current,upperdir=/home/deck/.zram/ram/changed,workdir=/home/deck/.zram/ram/changing /home/deck/.zram/ram/mountpoint
+chown deck:deck -R /home/deck/.zram
+
+function zram {
+	echo $@ | xargs -n1 echo | sort | while read -r target; do
+		mkdir -p /home/deck/$target
+		find /home/deck/$target -mindepth 1 -delete || true
+		chown -R deck:deck /home/deck/$target
+		mkdir -p /home/deck/.zram/ram/mountpoint/$target
+		chown -R deck:deck /home/deck/.zram/ram/mountpoint
+		mount -o bind /home/deck/.zram/ram/mountpoint/$target /home/deck/$target
+		chown -R deck:deck /home/deck/.zram/ram/mountpoint
+		chown -R deck:deck /home/deck/$target
+	done
+}
+
+function zramexclude {
+	echo $@ | xargs -n1 echo | sort | while read -r target; do
+		mkdir -p /home/deck/$target
+		find /home/deck/$target -mindepth 1 -delete || true
+		chown -R deck:deck /home/deck/$target
+		mkdir -p /home/deck/.zram/excluded/$target
+		chown -R deck:deck /home/deck/.zram/excluded
+		mount -o bind /home/deck/.zram/excluded/$target /home/deck/$target
+		chown -R deck:deck /home/deck/.zram/excluded
+		chown -R deck:deck /home/deck/$target
+	done
+}
+
+zram \
+	.cache \
+	.deckycache \
+	.local/share/Steam/appcache \
+	.local/share/baloo \
+	.local/share/sddm \
+	.local/share/xorg \
+	.local/share/Steam/steamapps/temp \
+	.local/share/Steam/logs \
+	.local/share/systemd/timers \
+	.local/share/icons \
+	.local/share/applications \
+	.local/state \
+	homebrew/logs
+
+zramexclude \
+	.cache/ibus

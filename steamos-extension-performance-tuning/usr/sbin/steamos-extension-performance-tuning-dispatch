@@ -1,0 +1,10 @@
+#!/usr/bin/env zsh
+
+if [[ $# -eq 0 ]]; then
+	exit 1
+fi
+
+target=$1
+shift
+
+systemd-run --no-block --collect /usr/sbin/steamos-extension-performance-tuning-udev-$target $@ > /dev/null 2>&1

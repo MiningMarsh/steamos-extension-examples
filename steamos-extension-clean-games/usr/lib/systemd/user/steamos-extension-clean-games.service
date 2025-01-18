@@ -1,0 +1,6 @@
+[Unit]
+Description=Clean Steam Installation
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/steamos-extension-clean-games

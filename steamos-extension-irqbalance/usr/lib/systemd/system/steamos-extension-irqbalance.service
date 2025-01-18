@@ -1,0 +1,13 @@
+[Unit]
+Description=Balance IRQ Handlers
+DefaultDependencies=false
+Requires=systemd-sysext.service
+After=systemd-sysext.service
+Before=sysinit.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/steamos-extension-irqbalance -f -j -p 1
+
+[Install]
+WantedBy=sysinit.target

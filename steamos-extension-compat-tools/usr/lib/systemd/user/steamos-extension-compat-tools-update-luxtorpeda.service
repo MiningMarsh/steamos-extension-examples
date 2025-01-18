@@ -1,0 +1,6 @@
+[Unit]
+Description=Update Luxtorpeda Compatibility Tool
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/steamos-extension-compat-tools-update-luxtorpeda

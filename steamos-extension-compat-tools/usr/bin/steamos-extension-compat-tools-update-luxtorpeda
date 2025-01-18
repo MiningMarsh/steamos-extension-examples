@@ -1,0 +1,56 @@
+#!/usr/bin/env zsh
+set -e
+
+if ! nm-online -x -q; then
+    echo Network manager reports no internet connection.
+    exit 1
+fi
+
+release_page='https://github.com/luxtorpeda-dev/luxtorpeda/releases'
+
+version="$(curl --silent $release_page | grep -oE 'v[0-9]+[.][0-9]+[.][0-9]+' | sort -V | uniq | tail -n1)"
+
+install_dir="$HOME/.steam/root/compatibilitytools.d"
+
+function generate_vdf {
+cat <<EOF
+"compatibilitytools"
+{
+  "compat_tools"
+  {
+    "$1"
+    {
+      "install_path" "."
+      "display_name" "$2"
+      "from_oslist"  "windows"
+      "to_oslist"    "linux"
+    }
+  }
+}
+EOF
+}
+
+mkdir -p $install_dir
+cd $install_dir
+
+if [[ -f luxtorpeda/finished-install ]]; then
+	if [[ "$(cat luxtorpeda/version)" == "$version" ]]; then
+		exit
+	fi
+fi
+
+if [[ -d luxtorpeda ]]; then
+	rm -rf luxtorpeda
+fi
+
+mkdir -p ~/.cache/steamos-extension-compat-tools
+if [[ -f ~/.cache/steamos-extension-compat-tools/luxtorpeda.tar.xz ]]; then
+	rm -rf ~/.cache/steamos-extension-compat-tools/luxtorpeda.tar.xz
+fi
+
+wget "$release_page/download/$version/luxtorpeda-$version.tar.xz" -O ~/.cache/steamos-extension-compat-tools/luxtorpeda.tar.xz --quiet > /dev/null 2>&1
+tar xpJf ~/.cache/steamos-extension-compat-tools/luxtorpeda.tar.xz
+rm -rf ~/.cache/steamos-extension-compat-tools/luxtorpeda.tar.xz
+
+generate_vdf luxtorpeda "Source Port" > luxtorpeda/compatibilitytool.vdf
+touch luxtorpeda/finished-install

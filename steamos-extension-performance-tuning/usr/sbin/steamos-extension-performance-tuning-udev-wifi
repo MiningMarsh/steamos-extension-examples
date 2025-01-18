@@ -1,0 +1,13 @@
+#!/usr/bin/env zsh
+
+if [[ $# -eq 0 ]]; then
+	exit 1
+fi
+
+. /usr/lib/steamos-extension-performance-tuning.zsh
+
+if on_ac; then
+	iwconfig $1 power off
+else
+	iwconfig $1 power on
+fi

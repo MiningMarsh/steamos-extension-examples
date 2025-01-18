@@ -1,0 +1,15 @@
+#!/usr/bin/env zsh
+
+if [[ $# -eq 0 ]]; then
+	exit 1
+fi
+
+. /usr/lib/steamos-extension-performance-tuning.zsh
+
+if on_ac; then
+	threshold=33
+else
+	threshold=10
+fi
+
+upsert /sys/fs/btrfs/$1/allocation/data/bg_reclaim_threshold <<< $threshold

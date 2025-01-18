@@ -1,0 +1,15 @@
+[Unit]
+Description=zRAM Compaction Daemon
+DefaultDependencies=false
+Requires=systemd-sysext.service steamos-extension-zram.service 
+Wants=steamos-extension-kernel-cmdline.service
+Conflicts=systemd-zram-setup@zram0.service systemd-zram-setup@zram1.service
+After=systemd-sysext.service steamos-extension-zram.service steamos-extension-kernel-cmdline.service
+Before=sysinit.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/steamos-extension-zram-compact
+
+[Install]
+WantedBy=sysinit.target

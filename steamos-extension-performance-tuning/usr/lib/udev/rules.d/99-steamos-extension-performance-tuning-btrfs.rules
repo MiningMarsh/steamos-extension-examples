@@ -1,0 +1,1 @@
+ACTION=="add|change", SUBSYSTEM=="block", ENV{ID_FS_TYPE}=="btrfs", RUN+="/usr/sbin/steamos-extension-performance-tuning-dispatch btrfs %E{ID_FS_UUID}"

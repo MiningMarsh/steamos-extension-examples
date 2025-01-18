@@ -1,0 +1,10 @@
+#!/usr/bin/env zsh
+
+if ! [[ -e /efi/EFI/steamos/grub.cfg ]]; then
+	exit
+fi
+
+if ! grep -q mitigations=off /efi/EFI/steamos/grub.cfg; then
+	sed -i -E 's@^(\s)*steamenv_boot(.*)$@\1steamenv_boot\2 mitigations=off@g' /efi/EFI/steamos/grub.cfg
+	touch /tmp/.kernel-cmdline-modified
+fi

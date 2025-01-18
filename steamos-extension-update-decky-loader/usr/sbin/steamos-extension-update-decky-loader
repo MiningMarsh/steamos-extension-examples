@@ -1,0 +1,21 @@
+#!/usr/bin/env zsh
+set -e
+
+if ! nm-online; then
+	exit 1
+fi
+
+VERSION=$(curl -s 'https://api.github.com/repos/SteamDeckHomebrew/decky-loader/releases' | jq -r "first(.[] | select(.prerelease == "false")).tag_name")
+
+if [[ -f /home/deck/homebrew/services/.loader.version ]] && [[ "$(cat /home/deck/homebrew/services/.loader.version)" == "$VERSION" ]]; then
+	exit 0
+fi
+
+export SUDO_USER=deck
+export SUDO_USER_UID="$(getent passwd deck | cut -f3 -d:)"
+export XDG_RUNTIME_DIR="/run/user/$SUDO_USER_UID"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+curl -L https://github.com/SteamDeckHomebrew/decky-installer/releases/latest/download/install_release.sh | sh || true
+
+mkdir -p /home/deck/homebrew
+chown deck:deck /home/deck/homebrew
