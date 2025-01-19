@@ -1,3 +1,5 @@
-enable systemd-sysext.service
-enable steamos-extension-loader.service
+disable steamos-extension-loader-system-cleaner.service
 enable steamos-extension-loader-installer.service
+enable steamos-extension-loader.service
+enable steamos-extension-loader-system-cleaner.timer
+enable systemd-sysext.service

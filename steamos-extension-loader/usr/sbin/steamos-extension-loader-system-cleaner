@@ -1,0 +1,6 @@
+#!/usr/bin/env zsh
+set -e
+
+mkdir -p /etc/systemd/{system,user}
+find /etc/systemd/{system,user} -xtype l -delete
+find /etc/systemd/{system,user} -mindepth 1 -type d -empty -delete

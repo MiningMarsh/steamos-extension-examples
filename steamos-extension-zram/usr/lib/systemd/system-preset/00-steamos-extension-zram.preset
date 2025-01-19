@@ -1,2 +1,2 @@
-enable steamos-extension-zram.service
 enable steamos-extension-zram-compact.service
+enable steamos-extension-zram.service

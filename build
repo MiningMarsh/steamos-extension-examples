@@ -1,6 +1,8 @@
 #!/usr/bin/env zsh
 set -ex
 
+find --iname '*.preset' | xargs -rI{} sort -o {} {}
+
 curl 'https://raw.githubusercontent.com/hakavlad/nohang/refs/heads/master/LICENSE' > steamos-extension-nohang/usr/share/steamos-extension-nohang-LICENSE
 curl 'https://raw.githubusercontent.com/hakavlad/nohang/refs/heads/master/src/nohang' > steamos-extension-nohang/usr/sbin/steamos-extension-nohang
 chmod 644 steamos-extension-nohang/usr/share/steamos-extension-nohang-LICENSE
@@ -10,7 +12,6 @@ curl 'https://raw.githubusercontent.com/hakavlad/prelockd/refs/heads/master/LICE
 curl 'https://raw.githubusercontent.com/hakavlad/prelockd/refs/heads/master/prelockd' > steamos-extension-prelockd/usr/sbin/steamos-extension-prelockd
 chmod 644 steamos-extension-prelockd/usr/share/steamos-extension-prelockd-LICENSE
 chmod 755 steamos-extension-prelockd/usr/sbin/steamos-extension-prelockd
-
 
 function compress() { 
 	local target=$1

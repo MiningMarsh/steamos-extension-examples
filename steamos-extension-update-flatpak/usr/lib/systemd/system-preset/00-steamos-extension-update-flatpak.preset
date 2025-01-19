@@ -1,2 +1,2 @@
-enable steamos-extension-update-flatpak.timer
 disable steamos-extension-update-flatpak.service
+enable steamos-extension-update-flatpak.timer

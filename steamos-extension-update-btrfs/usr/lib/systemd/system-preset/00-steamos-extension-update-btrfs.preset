@@ -1,2 +1,2 @@
-enable steamos-extension-update-btrfs.timer
 disable steamos-extension-update-btrfs.service
+enable steamos-extension-update-btrfs.timer

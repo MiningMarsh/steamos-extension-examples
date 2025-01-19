@@ -1,0 +1,6 @@
+[Unit]
+Description=Cleanup User Extension Loader
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/steamos-extension-loader-user-cleaner

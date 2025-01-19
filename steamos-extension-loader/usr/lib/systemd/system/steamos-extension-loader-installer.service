@@ -1,5 +1,5 @@
 [Unit]
-Description=Install Extension Loader
+Description=Install System Extension Loader
 Requires=systemd-sysext.service
 
 [Service]
