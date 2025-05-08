@@ -164,21 +164,7 @@ if [[ -e /boot/efi/EFI/steamos/grub.cfg ]]; then
 		nmi_watchdog=0 \
 		nowatchdog \
 		nohz_full \
-		nvme.io_queue_depth=257 \
-		nvme.max_host_mem_size_mb=3072 \
-		nvme.poll_queues=16 \
-		nvme.sgl_threshold=2097153 \
-		nvme.use_cmb_sqes=1 \
-		nvme.use_threaded_interrupts=1 \
-		nvme.write_queues=8 \
-		nvme_core.admin_timeout=900 \
-		nvme_core.io_timeout=4294967295 \
-		nvme_core.shutdown_timeout=60 \
-		nvme_core.streams=1 \
-		transparent_hugepage=always \
-		virtio_blk.num_request_queues=8 \
-		virtio_blk.poll_queues=16 \
-		virtio_blk.queue_depth=2048
+		transparent_hugepage=always
 	do
 		if grep -q $setting /boot/efi/EFI/steamos/grub.cfg; then
 			continue

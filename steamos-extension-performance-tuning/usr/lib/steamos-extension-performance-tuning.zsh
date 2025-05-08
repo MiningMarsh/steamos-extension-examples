@@ -95,14 +95,14 @@ function cpupm {
 		for policy in /sys/devices/system/cpu/cpufreq/policy*(N); do
 			echo powersave | tee $policy/scaling_governor > /dev/null 2>&1
 			if $1; then
-				echo balance_performance
+				echo balance_power
 			else
-				echo performance
+				echo balabce_performance
 			fi | tee $policy/energy_performance_preference > /dev/null 2>&1
 		done
 	else
 		if $1; then
-			cpupower frequency-set -g performance > /dev/null 2>&1
+			cpupower frequency-set -g ondemand > /dev/null 2>&1
 		else
 			cpupower frequency-set -g schedutil > /dev/null 2>&1
 		fi

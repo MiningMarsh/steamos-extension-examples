@@ -14,39 +14,11 @@ if mount | grep -q /home/deck/.zram/ram/mountpoint; then
 		umount -l $mountpoint
 	done
 
-	mkdir -p /home/deck/.zram/ram/buffered /home/deck/.zram/ram/overlay-tools-merge/temp 
-	find /home/deck/.zram/ram/buffered -mindepth 1 -delete || true
-	pushd /home/deck/.zram/ram/overlay-tools-merge
-
-	/usr/sbin/steamos-extension-zram-overlay-tool deref \
-		-u /home/deck/.zram/ram/changed \
-		-l /home/deck/.zram/current \
-		-U /home/deck/.zram/ram/buffered \
-		-L temp \
-		-m /home/deck/.zram/ram/mountpoint \
-		|| true
-	grep -vE 'LOWER(NEW|DIR)' *.sh > deref.sh
-	bash deref.sh > /dev/null 2>&1 || true
-	rm -rf *.sh temp /home/deck/.zram/ram/changed
-
+	mkdir -p /home/deck/.zram/ram/buffered
+	rsync -ra --delete --delete-before /home/deck/.zram/ram/mountpoint/ /home/deck/.zram/ram/buffered/
 	umount -l /home/deck/.zram/ram/mountpoint
 	rm -rf /home/deck/.zram/ram/{mountpoint,changing}
-
-	/usr/sbin/steamos-extension-zram-overlay-tool vacuum \
-		-u /home/deck/.zram/ram/buffered \
-		-l /home/deck/.zram/current \
-		|| true
-	bash *.sh > /dev/null 2>&1 || true
-	rm -rf *.sh
-	mkdir -p /home/deck/.zram/buffered
-
-	/usr/sbin/steamos-extension-zram-overlay-tool merge \
-		-u /home/deck/.zram/ram/buffered \
-		-l /home/deck/.zram/current \
-		|| true
-	bash *.sh > /dev/null 2>&1 || true
-	popd
-	rm -rf /home/deck/.zram/ram/{overlay-tools-merge,buffered}
+	rsync -ra --delete --delete-before /home/deck/.zram/ram/buffered/ /home/deck/.zram/ram/current/
 fi
 
 if mount | grep -q /home/deck/.zram/ram; then
