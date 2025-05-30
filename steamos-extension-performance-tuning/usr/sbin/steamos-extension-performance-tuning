@@ -2,11 +2,18 @@
 
 . /usr/lib/steamos-extension-performance-tuning.zsh
 
+# Enable discard on swap devices.
 < /proc/swaps while read -r device devtype devsize devuse devprio; do
 	if grep -q swapfile <<< $device && [[ $devtype == file ]]; then
 		swapoff $device && swapon --discard -p $devprio $device
 	fi
 done
+
+# Disable ENABLE_GAMESCOPE_WSI
+sed -e 's/ENABLE_GAMESCOPE_WSI=1/ENABLE_GAMESCOPE_WSI=0/g' /usr/lib/steamos/gamescope-session > /tmp/.steamos-extension-performance-tuning-gamescope-session
+chmod 755 /tmp/.steamos-extension-performance-tuning-gamescope-session
+chown root:root /tmp/.steamos-extension-performance-tuning-gamescope-session
+mount -o bind /tmp/.steamos-extension-performance-tuning-gamescope-session /usr/lib/steamos/gamescope-session
 
 # baloo is KDE's file indexer. It can be a performance hog sometimes.
 for unit in \
@@ -31,7 +38,7 @@ systune /sys/kernel/mm/lru_gen \
 	enabled 7 \
 	min_ttl_ms 0
 
-# Raise file limits. This should oxcur early enough in the boot to apply
+# Raise file limits. This should occur early enough in the boot to apply
 # to everything. We dont bother enforcing persistence here as the extension
 # can just reinstall the file on next boot after an update.
 upsert /etc/security/limits.d/00-steamos-extension-performance-tuning.conf << EOF
@@ -48,8 +55,8 @@ systune /sys/kernel/mm/ksm \
 systune /sys/kernel/mm/transparent_hugepage \
 	enabled always \
 	defrag madvise \
-	shmem_enabled always \
 	khugepaged/defrag 0
+	#shmem_enabled always \
 
 # Turn on transparent hugepages for shared menory.
 mount -o remount,huge=advise /tmp
@@ -77,7 +84,7 @@ kernel.printk=0 0 0 0
 vm.page_lock_unfairness=1
 
 # Enable task auto-grouping; this should make latency of tooling like the
-# UI overlay better under hogh load games.
+# UI overlay better under high load games.
 kernel.sched_autogroup_enabled=0
 
 # Double the CFS transfer timeslice to reduce transfer overhead.
@@ -103,7 +110,8 @@ kernel.sched_rr_timeslice_ms=1
 # scheduler to realize that. This is known to affect workloads like gaming on 
 # mobile devices where frames will drop due to slow response time to select the
 # higher frequency required for the tasks to finish their work in time. Setting
-# UCLAMP_MIN=1024 will ensure such tasks will always see the highest performance level when they start running.
+# UCLAMP_MIN=1024 will ensure such tasks will always see the highest performance 
+# level when they start running.
 kernel.sched_util_clamp_min=1024
 kernel.sched_util_clamp_min_rt_default=1024
 
@@ -113,7 +121,7 @@ kernel.task_delayacct=0
 # Enable timer migration to non-idle cores to minimize wakeups.
 kernel.timer_migration=1
 
-# Generic network tuninf.
+# Generic network tuning.
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 net.ipv4.tcp_fastopen=3
@@ -122,13 +130,16 @@ net.ipv4.tcp_keepalive_probes=6
 net.ipv4.tcp_keepalive_time=180
 net.unix.max_dgram_qlen=8192
 
-# Reserve 3% 9f syatem memory.
+# Reserve 3% of system memory.
 vm.admin_reserve_kbytes=$(( $(grep MemTotal /proc/meminfo | awk '{print $2}') * 3 / 100 ))
 
+# VM tweaking
 vm.dirty_background_ratio=16
 vm.dirty_expire_centisecs=12000
 vm.dirty_ratio=24
 vm.dirty_writeback_centisecs=6000
+vm.swappiness=200
+vm.vfs_cache_pressure=200
 
 # Recommended value is 1 per 128kB of system RAM.
 vm.max_map_count=$(( $(grep MemTotal /proc/meminfo | awk '{print $2}') / 128 ))
@@ -137,17 +148,13 @@ vm.max_map_count=$(( $(grep MemTotal /proc/meminfo | awk '{print $2}') / 128 ))
 vm.min_free_kbytes=$(( $(grep MemTotal /proc/meminfo | awk '{print $2}') * 6 / 100 ))
 
 # Instruct the OOM killer to immediately kill the task that failed allocation.
-# Shpuld make OOM conditions more responsive.
+# Should make OOM conditions more responsive.
 vm.oom_kill_allocating_task=1
 
 # Disable page-clustering on swap since we use zRAM.
 vm.page-cluster=0
 
-# Adjust virtual menory settings.
-vm.swappiness=200
-vm.vfs_cache_pressure=200
-
-# Watermark for swap is 33% of RAM. Very aggressive since we havw zRAM swap.
+#bWatermark for swap is 33% of RAM. Very aggressive since we have zRAM swap.
 vm.watermark_scale_factor=333
 EOF
 
@@ -158,12 +165,18 @@ EOF
 # FIXME: Add HoloISO support.
 if [[ -e /boot/efi/EFI/steamos/grub.cfg ]]; then
 	for setting in \
+		amdgpu.moverate=128 \
+	       	amdgpu.cwsr_enable=0 \
+	       	amdgpu.mes=1 \
+	       	amdgpu.uni_mes=1 \
+	        amdgpu.umsch_mm=1 \
 		drm_kms_helper.poll=0 \
 		gbpages \
 		mem_encrypt=off \
 		nmi_watchdog=0 \
-		nowatchdog \
 		nohz_full \
+		nowatchdog \
+		usbhid.jspoll=1 \
 		transparent_hugepage=always
 	do
 		if grep -q $setting /boot/efi/EFI/steamos/grub.cfg; then

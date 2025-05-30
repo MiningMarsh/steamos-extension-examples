@@ -14,11 +14,11 @@ if mount | grep -q /home/deck/.zram/ram/mountpoint; then
 		umount -l $mountpoint
 	done
 
-	mkdir -p /home/deck/.zram/ram/buffered
-	rsync -ra --delete --delete-before /home/deck/.zram/ram/mountpoint/ /home/deck/.zram/ram/buffered/
+	mkdir -p /home/deck/.zram/buffer
+	rsync -ra --delete --delete-before /home/deck/.zram/ram/mountpoint/ /home/deck/.zram/buffer/
 	umount -l /home/deck/.zram/ram/mountpoint
 	rm -rf /home/deck/.zram/ram/{mountpoint,changing}
-	rsync -ra --delete --delete-before /home/deck/.zram/ram/buffered/ /home/deck/.zram/ram/current/
+	rsync -ra --delete --delete-before /home/deck/.zram/buffer/ /home/deck/.zram/ram/current/
 fi
 
 if mount | grep -q /home/deck/.zram/ram; then
