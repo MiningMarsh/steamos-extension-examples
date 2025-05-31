@@ -17,27 +17,31 @@ if \
 	[[ 1 -eq $(cat /sys/block/$1/queue/rotational) ]]
 then
 	systune /sys/block/$1 \
+		queue/add_random 0 \
+		queue/iostats 0 \
 		queue/scheduler bfq
 elif \
 	[[ -f /sys/block/$1/removable ]] && \
 	[[ 1 -eq $(cat /sys/block/$1/removable) ]]
 then
 	systune /sys/block/$1 \
-		queue/scheduler mq-deadline \
-		queue/nr_requests 64 \
-		queue/max_sectors_kb 2048 \
-		queue/read_ahead_kb 2048 \
-		queue/io_poll_delay 0 \
-		queue/io_poll 1 \
-		queue/wbt_lat_usec 33111 \
-		queue/throttle_sample_time 11 \
 		device/ncq_prio_enable 1 \
-		device/queue_ramp_up_period 1111
+		device/queue_ramp_up_period 1111 \
+		queue/add_random 0 \
+		queue/io_poll 1 \
+		queue/io_poll_delay 0 \
+		queue/iostats 0 \
+		queue/max_sectors_kb 2048 \
+		queue/nr_requests 64 \
+		queue/read_ahead_kb 2048 \
+		queue/scheduler mq-deadline \
+		queue/throttle_sample_time 11 \
+		queue/wbt_lat_usec 33111
 else
 	systune /sys/block/$1 \
-		queue/scheduler kyber \
 		queue/add_random 0 \
 		queue/io_poll_delay 0 \
+		queue/iostats 0 \
 		queue/iosched/fifo_batch 4 \
 		queue/iosched/front_merges 0 \
 		queue/iosched/read_expire 100 \
@@ -50,6 +54,7 @@ else
 		queue/nr_requests 8 \
 		queue/read_ahead_kb 2048 \
 		queue/rq_affinity 2 \
+		queue/scheduler kyber \
 		queue/throttle_sample_time 3 \
 		queue/wbt_lat_usec 3333
 fi

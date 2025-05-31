@@ -9,12 +9,6 @@
 	fi
 done
 
-# Disable ENABLE_GAMESCOPE_WSI
-sed -e 's/ENABLE_GAMESCOPE_WSI=1/ENABLE_GAMESCOPE_WSI=0/g' /usr/lib/steamos/gamescope-session > /tmp/.steamos-extension-performance-tuning-gamescope-session
-chmod 755 /tmp/.steamos-extension-performance-tuning-gamescope-session
-chown root:root /tmp/.steamos-extension-performance-tuning-gamescope-session
-mount -o bind /tmp/.steamos-extension-performance-tuning-gamescope-session /usr/lib/steamos/gamescope-session
-
 # baloo is KDE's file indexer. It can be a performance hog sometimes.
 for unit in \
 	gssuserproxy.socket \
@@ -31,6 +25,14 @@ for unit in \
 	systemd-tmpfiles-clean.timer
 do
 	systemctl enable --global $unit
+done
+
+# Extraneous system services.
+for unit in \
+	gpu-trace.service \
+	steamos-log-submitter.service
+do
+	systemctl disable --now $unit
 done
 
 # Enable multi-gen LRU
@@ -55,8 +57,8 @@ systune /sys/kernel/mm/ksm \
 systune /sys/kernel/mm/transparent_hugepage \
 	enabled always \
 	defrag madvise \
+	shmem_enabled advise \
 	khugepaged/defrag 0
-	#shmem_enabled always \
 
 # Turn on transparent hugepages for shared menory.
 mount -o remount,huge=advise /tmp
@@ -72,13 +74,34 @@ vm.compaction_proactiveness=0
 
 # Disable core dumps.
 kernel.core_pattern=|/bin/false
+kernel.core_pipe_limit=0
+
+# Disable kernwl tracing.
+kernel.ftrace_enabled=0
+
+# Disable dnotify, everything uses inotify anyways.
+fs.dir-notify-enable=0
+
+# Disable kexec, SteamOS doesn't use it.
+kernel.kexec_load_disabled=1
+kernel.kexec_load_limit_panic=0
+kernel.kexec_load_limit_reboot=0
 
 # Disables the hung task scanner to reduce background activity
 kernel.hung_task_timeout_secs=0
 kernel.hung_task_check_interval_secs=5
 
+# Enable BPF
+kernel.unprivileged_bpf_disabled=0
+
+# Rate limit.peeformance monitoring.
+kernel.perf_cpu_time_max_percent=3
+
 # Effectively disable the kernel logger.
 kernel.printk=0 0 0 0
+kernel.printk_ratelimit_burst=5
+kernel.printk_devkmsg=off
+debug.exception-trace=0
 
 # Minimize page lock unfairness without disabling it.
 vm.page_lock_unfairness=1
@@ -140,6 +163,7 @@ vm.dirty_ratio=24
 vm.dirty_writeback_centisecs=6000
 vm.swappiness=200
 vm.vfs_cache_pressure=200
+vm.hugetlb_optimize_vmemmap=1
 
 # Recommended value is 1 per 128kB of system RAM.
 vm.max_map_count=$(( $(grep MemTotal /proc/meminfo | awk '{print $2}') / 128 ))
@@ -154,8 +178,17 @@ vm.oom_kill_allocating_task=1
 # Disable page-clustering on swap since we use zRAM.
 vm.page-cluster=0
 
-#bWatermark for swap is 33% of RAM. Very aggressive since we have zRAM swap.
+# Watermark for swap is 33% of RAM. Very aggressive since we have zRAM swap.
 vm.watermark_scale_factor=333
+vm.watermark_boost_factor=0
+
+# Generic filesystem-related tweaks.
+fs.aio-max-nr=131072
+fs.epoll.max_user_watches=524288
+fs.inotify.max_queued_events=32768
+fs.inotify.max_user_watches=1048576
+fs.pipe-max-size=2097152
+
 EOF
 
 # Kernel parameter tweaks.
@@ -165,19 +198,31 @@ EOF
 # FIXME: Add HoloISO support.
 if [[ -e /boot/efi/EFI/steamos/grub.cfg ]]; then
 	for setting in \
+		amd_pstate=active \
+		amdgpu.cwsr_enable=0 \
+		amdgpu.mes=1 \
 		amdgpu.moverate=128 \
-	       	amdgpu.cwsr_enable=0 \
-	       	amdgpu.mes=1 \
-	       	amdgpu.uni_mes=1 \
-	        amdgpu.umsch_mm=1 \
+		amdgpu.umsch_mm=1 \
+		amdgpu.uni_mes=1 \
 		drm_kms_helper.poll=0 \
 		gbpages \
 		mem_encrypt=off \
 		nmi_watchdog=0 \
 		nohz_full \
 		nowatchdog \
+		nvme.max_host_mem_size_mb=3072 \
+		nvme.sgl_threshold=2097153 \
+		nvme.use_cmb_sqes=1 \
+		nvme.use_threaded_interrupts=1 \
+		nvme_core.admin_timeout=900 \
+		nvme_core.io_timeout=4294967295 \
+		nvme_core.shutdown_timeout=60 \
+		scsi_mod.scan=async \
+		transparent_hugepage=always \
 		usbhid.jspoll=1 \
-		transparent_hugepage=always
+		virtio_blk.num_request_queues=8 \
+		virtio_blk.poll_queues=16 \
+		virtio_blk.queue_depth=2048
 	do
 		if grep -q $setting /boot/efi/EFI/steamos/grub.cfg; then
 			continue
@@ -214,6 +259,17 @@ for block in $(ls /sys/block); do
 
 	upsert /sys/block/$block/queue/scheduler <<< $scheduler
 done
+
+# PCI tweaks.
+setpci -v -s '*:*' latency_timer=20
+setpci -v -s '0:0' latency_timer=0
+setpci -v -d "*:*:04xx" latency_timer=80
+
+# Disable atime on any boot-mounted filesystems.
+mount \
+| grep -E '^/dev/nvme' \
+| awk '{print $3}' \
+| xargs -rn1 -P$(nproc --all) mount -o remount,noatime
 
 # Perform block device specific optimizations.
 # Run in parallel to charging/discharging optimizations.

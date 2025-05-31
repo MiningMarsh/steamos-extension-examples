@@ -7,7 +7,9 @@ fi
 . /usr/lib/steamos-extension-performance-tuning.zsh
 
 systune /sys/block/$1 \
+	queue/add_random 0 \
 	queue/io_poll_delay 0 \
+	queue/iostats 0 \
 	queue/max_sectors_kb 2048 \
 	queue/nomerges 1 \
 	queue/nr_requests 1024 \
