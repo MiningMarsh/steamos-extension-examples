@@ -1,0 +1,3 @@
+enable steamos-extension-hibernate-after-sleep-install.service
+enable steamos-extension-hibernate-after-sleep-fix-bluetooth.service
+enable steamos-extension-hibernate-after-sleep-mark-boot-good.service

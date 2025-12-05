@@ -1,0 +1,14 @@
+[Unit]
+Description=Configure Hibernation After Sleep
+DefaultDependencies=false
+Requires=systemd-sysext.service
+After=systemd-sysext.service
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/usr/sbin/steamos-extension-hibernate-after-sleep-install
+
+[Install]
+WantedBy=sysinit.target
