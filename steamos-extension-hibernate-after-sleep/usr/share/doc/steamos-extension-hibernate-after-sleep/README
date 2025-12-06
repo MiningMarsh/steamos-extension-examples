@@ -1,0 +1,94 @@
+SteamOS Extension: Hibernate After Sleep
+========================================
+
+This extension enables hibernate-after-sleep functionality on the Steam Deck,
+allowing the device to automatically hibernate after being suspended for a
+configurable period of time.
+
+Features
+--------
+
+- Automatically creates and configures a swap file for hibernation
+- Configures GRUB bootloader with resume parameters
+- Sets up systemd to use suspend-then-hibernate
+- Fixes Bluetooth issues after resume from hibernation
+- Marks boot state as good after successful resume
+- User-configurable hibernation delay
+
+Configuration
+-------------
+
+To configure the hibernate delay and swap file size:
+
+1. Create the configuration directory:
+   mkdir -p /home/deck/.config
+
+2. Copy the example configuration:
+   cp /usr/share/doc/steamos-extension-hibernate-after-sleep/example-config \
+      /home/deck/.config/hibernate-after-sleep
+
+3. Edit the configuration file:
+   nano /home/deck/.config/hibernate-after-sleep
+
+4. Set your desired values:
+   - HibernateDelaySec (default: 60min)
+   - TargetSwapFileSizeInGbs (default: 20)
+
+5. Rerun the install script to apply changes:
+   sudo /usr/sbin/steamos-extension-hibernate-after-sleep-install
+
+Valid time values
+-----------------
+
+The HibernateDelaySec parameter accepts systemd time span values:
+- Seconds: "30s", "120s"
+- Minutes: "5min", "30min", "60min"
+- Hours: "1h", "2h"
+- Combinations: "1h 30min"
+
+What this extension does
+------------------------
+
+1. Creates a swap file at /home/swapfile (default: 20GB, configurable)
+2. Configures GRUB to resume from the swap file
+3. Sets up systemd-logind to bypass hibernation memory checks
+4. Enables suspend-then-hibernate behavior
+5. Configures the delay before hibernating (default: 60 minutes)
+6. Sets up services to fix Bluetooth and mark boot state after resume
+
+GRUB Changes
+------------
+
+This extension modifies the GRUB configuration directly to add resume parameters:
+- resume=/dev/disk/by-uuid/[UUID]
+- resume_offset=[OFFSET]
+
+After installation, your system will automatically hibernate after the
+configured delay when suspended.
+
+Troubleshooting
+---------------
+
+If hibernation doesn't work:
+
+1. Check that the swap file exists:
+   ls -lh /home/swapfile
+
+2. Verify GRUB configuration:
+   cat /boot/efi/EFI/steamos/grub.cfg | grep resume
+
+3. Check systemd sleep configuration:
+   cat /etc/systemd/sleep.conf
+
+4. Rerun the install script with --force flag:
+   sudo /usr/sbin/steamos-extension-hibernate-after-sleep-install --force
+
+5. Reboot the system
+
+Notes
+-----
+
+- The swap file defaults to 20GB (configurable via TargetSwapFileSizeInGbs)
+- Changes to GRUB or swap file size require a reboot to take effect
+- The extension will preserve existing resume parameters if they match
+- Bluetooth may briefly disconnect after resume (automatically fixed)

@@ -1,0 +1,13 @@
+# Example configuration file for hibernate-after-sleep extension
+# Copy this file to: /home/deck/.config/hibernate-after-sleep
+#
+# HibernateDelaySec: Time to wait before hibernating after suspend
+# Valid values: time spans like "60s", "5min", "1h", etc.
+# Default: 60min
+
+HibernateDelaySec=60min
+
+# Examples:
+# HibernateDelaySec=30min  # Hibernate after 30 minutes of suspend
+# HibernateDelaySec=2h     # Hibernate after 2 hours of suspend
+# HibernateDelaySec=15min  # Hibernate after 15 minutes of suspend

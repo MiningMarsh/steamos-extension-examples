@@ -1,0 +1,10 @@
+[Unit]
+Description=Mark Boot State Good After Resume
+After=suspend.target suspend-then-hibernate.target hibernate.target hybrid-sleep.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/steamos-extension-hibernate-after-sleep-mark-boot-good
+
+[Install]
+WantedBy=suspend.target suspend-then-hibernate.target hibernate.target hybrid-sleep.target
