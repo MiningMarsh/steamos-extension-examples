@@ -1,0 +1,10 @@
+[Unit]
+Description=Fix Bluetooth After Resume
+After=hibernate.target hybrid-sleep.target suspend-then-hibernate.target bluetooth.service suspend.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/steamos-extension-hibernate-after-sleep-fix-bluetooth
+
+[Install]
+WantedBy=hibernate.target hybrid-sleep.target suspend-then-hibernate.target suspend.target

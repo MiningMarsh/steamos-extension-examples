@@ -1,0 +1,268 @@
+#!/bin/bash
+set -e
+
+TargetSwapFileSizeInGbs=20
+HibernateDelaySec="60min"
+FORCE=0
+
+function load_config {
+	local config_file="/home/deck/.config/hibernate-after-sleep"
+	if [[ -f "$config_file" ]]; then
+		local value=$(grep -E '^HibernateDelaySec=' "$config_file" | head -1 | cut -d= -f2 | tr -d '"' | grep -oE '^[0-9]+[a-z]+( [0-9]+[a-z]+)*$')
+		if [[ -n "$value" ]]; then
+			HibernateDelaySec="$value"
+		fi
+
+		value=$(grep -E '^TargetSwapFileSizeInGbs=' "$config_file" | head -1 | cut -d= -f2 | tr -d '"' | grep -oE '^[0-9]+$')
+		if [[ -n "$value" ]]; then
+			TargetSwapFileSizeInGbs="$value"
+		fi
+	fi
+}
+
+function is_btrfs {
+	local fstype=$(findmnt -no FSTYPE -T /home)
+	[[ "$fstype" == "btrfs" ]]
+}
+
+function get_swapfile_path {
+	if is_btrfs; then
+		echo "/home/@swapfile/swapfile"
+	else
+		echo "/home/swapfile"
+	fi
+}
+
+function setup_swapfile_btrfs {
+	local swapfile_path="/home/@swapfile/swapfile"
+	local target_size="${TargetSwapFileSizeInGbs}G"
+
+	if [[ ! -d "/home/@swapfile" ]]; then
+		btrfs subvolume create /home/@swapfile
+	fi
+
+	local needs_rebuild=0
+	if [[ ! -f "$swapfile_path" ]]; then
+		needs_rebuild=1
+	else
+		local target_bytes=$(($TargetSwapFileSizeInGbs*1073741824))
+		local current_size=$(stat -c %s "$swapfile_path" 2>/dev/null || echo 0)
+		if [[ $current_size != $target_bytes ]]; then
+			needs_rebuild=1
+		fi
+	fi
+
+	if [[ $needs_rebuild -eq 1 ]]; then
+		echo "Configuring swapfile on BTRFS"
+		swapoff "$swapfile_path" 2>/dev/null || true
+		rm -f "$swapfile_path"
+		truncate -s 0 "$swapfile_path"
+		chattr +C "$swapfile_path"
+		fallocate -l "$target_size" "$swapfile_path"
+		chmod 600 "$swapfile_path"
+		mkswap "$swapfile_path"
+		swapon "$swapfile_path"
+	fi
+}
+
+function setup_swapfile_ext4 {
+	local swapfile_path="/home/swapfile"
+	local target_bytes=$(($TargetSwapFileSizeInGbs*1073741824))
+	local current_size=$(stat -c %s "$swapfile_path" 2>/dev/null || echo 0)
+
+	if [[ $current_size != $target_bytes ]]; then
+		echo "Configuring swapfile"
+		swapoff -a 2>/dev/null || true
+		dd if=/dev/zero of="$swapfile_path" bs=1G count=$TargetSwapFileSizeInGbs
+		chmod 600 "$swapfile_path"
+		mkswap "$swapfile_path"
+		swapon "$swapfile_path"
+		e4defrag "$swapfile_path" 2>/dev/null || true
+	fi
+}
+
+function setup_swapfile {
+	if is_btrfs; then
+		setup_swapfile_btrfs
+	else
+		setup_swapfile_ext4
+	fi
+}
+
+function get_swap_offset {
+	local swapfile_path=$(get_swapfile_path)
+
+	if is_btrfs; then
+		btrfs inspect-internal map-swapfile -r "$swapfile_path"
+	else
+		filefrag -v "$swapfile_path" | awk '$1=="0:" {print substr($4, 1, length($4)-2)}'
+	fi
+}
+
+function update_grub_resume {
+	local swapfile_path=$(get_swapfile_path)
+	local uuid=$(findmnt -no UUID -T "$swapfile_path")
+	local offset=$(get_swap_offset)
+	local starter=steamenv_boot
+	local cfg=/boot/efi/EFI/steamos/grub.cfg
+	local remount=false
+
+	# HoloISO
+	if [[ -f /boot/grub/grub.cfg ]]; then
+		starter=linux
+		cfg=/boot/grub/grub.cfg
+		remount=true
+	fi
+
+	if [[ ! -e $cfg ]]; then
+		echo "Warning: GRUB config file not found at $cfg"
+		return 1
+	fi
+
+	# Check if resume parameters are already set correctly
+	if grep -q "resume=/dev/disk/by-uuid/$uuid" "$cfg" && grep -q "resume_offset=$offset" "$cfg"; then
+		echo "GRUB resume parameters already configured correctly"
+		return 0
+	fi
+
+	# HoloISO keeps boot on the readonly partition.
+	if $remount && [[ ! -f /tmp/.hibernate-after-sleep-readonly-disabled ]]; then
+		steamos-readonly disable
+		touch /tmp/.hibernate-after-sleep-readonly-disabled
+	fi
+
+	echo "Updating GRUB configuration"
+
+	# Remove existing resume parameters if present
+	sed -i -E 's/ resume=[^ ]*//g' "$cfg"
+	sed -i -E 's/ resume_offset=[0-9]*//g' "$cfg"
+
+	# Add new resume parameters
+	sed -i -E 's@^(\s*)'$starter'(.*)$@\1'$starter'\2 resume=/dev/disk/by-uuid/'$uuid' resume_offset='$offset'@g' "$cfg"
+	touch /tmp/.hibernate-after-sleep-modified
+}
+
+function ensure_logind_bypass {
+	local override_dir="/etc/systemd/system/systemd-logind.service.d"
+	local override_file="$override_dir/override.conf"
+	local env_var="Environment=SYSTEMD_BYPASS_HIBERNATION_MEMORY_CHECK=1"
+	local needs_reload=0
+
+	mkdir -p "$override_dir"
+
+	if [[ ! -f "$override_file" ]]; then
+		echo "[Service]" > "$override_file"
+		echo "$env_var" >> "$override_file"
+        chmod 644 $override_file
+		needs_reload=1
+	else
+		if grep -q "^Environment=SYSTEMD_BYPASS_HIBERNATION_MEMORY_CHECK=1" "$override_file"; then
+			return 0
+		fi
+
+		local in_service_section=0
+		local temp_file=$(mktemp)
+
+		while IFS= read -r line; do
+			if [[ "$line" =~ ^\[Service\] ]]; then
+				in_service_section=1
+				echo "$line" >> "$temp_file"
+			elif [[ "$line" =~ ^\[.*\] ]]; then
+				if [[ $in_service_section -eq 1 ]]; then
+					echo "$env_var" >> "$temp_file"
+					in_service_section=0
+					needs_reload=1
+				fi
+				echo "$line" >> "$temp_file"
+			else
+				echo "$line" >> "$temp_file"
+			fi
+		done < "$override_file"
+
+		if [[ $in_service_section -eq 1 ]]; then
+			echo "$env_var" >> "$temp_file"
+			needs_reload=1
+		fi
+
+		if [[ $needs_reload -eq 0 ]]; then
+			echo "" >> "$temp_file"
+			echo "[Service]" >> "$temp_file"
+			echo "$env_var" >> "$temp_file"
+			needs_reload=1
+		fi
+
+		mv "$temp_file" "$override_file"
+        chmod 644 $override_file
+	fi
+
+	if [[ $needs_reload -eq 1 ]]; then
+		echo "Configuring systemd-logind hibernation bypass"
+		systemctl daemon-reload
+	fi
+}
+
+function enable_suspend_hibernate {
+	local suspend_service="/etc/systemd/system/systemd-suspend.service"
+	local target_service="/usr/lib/systemd/system/systemd-suspend-then-hibernate.service"
+
+	if [[ ! -f "$suspend_service" ]]; then
+		echo "Enabling suspend-then-hibernate"
+		ln -s "$target_service" "$suspend_service"
+		systemctl daemon-reload
+	fi
+}
+
+function update_sleep_config {
+	echo "[Sleep]
+AllowSuspend=yes
+AllowHibernation=yes
+AllowSuspendThenHibernate=yes
+HibernateDelaySec=$HibernateDelaySec" > /etc/systemd/sleep.conf
+	echo "Configured hibernate delay: $HibernateDelaySec"
+}
+
+function enable_resume_services {
+	systemctl enable steamos-extension-hibernate-after-sleep-fix-bluetooth.service 2>/dev/null || true
+	systemctl enable steamos-extension-hibernate-after-sleep-mark-boot-good.service 2>/dev/null || true
+}
+
+function install_uninstall_script {
+	local bin_dir="/home/deck/.bin"
+	local uninstall_source="/usr/share/doc/steamos-extension-hibernate-after-sleep/steamos-extension-hibernate-after-sleep-uninstall.sh"
+	local uninstall_dest="$bin_dir/steamos-extension-hibernate-after-sleep-uninstall.sh"
+
+	mkdir -p "$bin_dir"
+	chown deck:deck "$bin_dir"
+
+	if [[ -f "$uninstall_source" ]]; then
+		cp "$uninstall_source" "$uninstall_dest"
+		chmod 755 "$uninstall_dest"
+		chown root:root "$uninstall_dest"
+	fi
+}
+
+function cleanup {
+	if [[ -f /tmp/.hibernate-after-sleep-readonly-disabled ]]; then
+		rm -f /tmp/.hibernate-after-sleep-readonly-disabled
+		steamos-readonly enable
+	fi
+
+	if [[ -f /tmp/.hibernate-after-sleep-modified ]]; then
+		rm -f /tmp/.hibernate-after-sleep-modified
+		echo "GRUB configuration updated. Please reboot for changes to take effect."
+	fi
+}
+
+if [[ "$1" == "--force" ]]; then
+	FORCE=1
+fi
+
+load_config
+setup_swapfile
+update_grub_resume
+ensure_logind_bypass
+enable_suspend_hibernate
+update_sleep_config
+enable_resume_services
+install_uninstall_script
+cleanup
