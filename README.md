@@ -18,7 +18,7 @@ If you are an end user trying to understand or use any of these extensions, plea
 
 ## How it Works
 
-The `steamos-extension-loader.raw` extension provides two services: `steamos-extension-loader.service` and `steamos-extension-loader-installer.service`>
+The `steamos-extension-loader.raw` extension provides two services: `steamos-extension-loader.service` and `steamos-extension-loader-installer.service`.
 
 `steamos-extension-loader.service` and `steamos-extension-loader-installer.service` have two purposes:
 
