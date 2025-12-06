@@ -57,4 +57,4 @@ Installing additional extensions is as easy as placing them in `/var/lib/extensi
 
 Extensions can be uninstalled by removing their extension file from `/var/lib/extensions`, and rebooting. It is safe to leave the loader installed even if all extensions are uninstalled, it just won't do anything.
 
-The build script for these example extensions is included. It is designed to be run by the root user on a steam deck, allowing easier debugging: just clone it to any directory and run `./build`. Extensions will be deposited in `/var/lib/extensions`.
+The build script for these example extensions is included. It is designed to be run by the root user on a steam deck, allowing easier debugging: just clone this repository to any location and run `./build`. Extensions will be deposited in `/var/lib/extensions`.
