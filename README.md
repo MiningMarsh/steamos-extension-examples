@@ -14,7 +14,7 @@ The rest of this README.md will focus on the specific differences needed to use 
 
 ## Built Images / End User
 
-If you are an end user trying to unserstand or use anh of theae extensions, please find the built images and instrucrions to use them [here](https://github.com/MiningMarsh/steamos-extensions).
+If you are an end user trying to understand or use any of these extensions, please find the built images and instructions to use them [here](https://github.com/MiningMarsh/steamos-extensions).
 
 ## How it Works
 
